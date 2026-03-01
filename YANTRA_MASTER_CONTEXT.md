@@ -627,12 +627,13 @@ The daemon emits `yantraos/telemetry/v1` JSON (see §3.2) via:
 
 ---
 
-## 15. Vector Memory & Core Telemetry Fixes (2026-02-28)
+## 15. Core Infra, ISO Build, and Kiosk Fixes (Feb-Mar 2026)
 
 1. **Async Vector Memory Integrity (`core/vector_memory.py`)**:
    - Fixed the `RuntimeWarning: coroutine 'VectorMemory.initialize' was never awaited` bug.
    - Refactored `_require_initialized()` from a synchronous check to an `async def` that dynamically awaits `self.initialize()` if not previously initialized.
    - Inserted `await` to all internal call sites in `VectorMemory` that trigger storage (`store_execution`, `index_skill`) or queries (`query_executions`, `query_skills`).
+   - Hardened `VectorMemory` with an `_init_failed` flag to gracefully degrade the system—logging a single warning and preventing infinite retry loops if `chromadb` fails to load.
 
 2. **Telemetry Payload Re-arming (`core/cloud.py`)**:
    - Re-enabled Bearer token authentication in `emit_telemetry()` by uncommenting the `Authorization` header block, directly referencing `os.environ.get('YANTRA_TELEMETRY_TOKEN')`.
@@ -643,6 +644,16 @@ The daemon emits `yantraos/telemetry/v1` JSON (see §3.2) via:
    - Updated `archlive/compile_iso.sh` to stage `host_secrets.env` directly into `/etc/yantra/host_secrets.env` inside the `airootfs` (permissions: 0400/0600).
    - Reloaded all environments in systemd files (`deploy/systemd/yantra.service` and `archlive/airootfs/etc/systemd/system/yantra.service`) using the path `EnvironmentFile=-/etc/yantra/host_secrets.env`.
    - Explicitly mapped `SECRETS_ENV_PATH = "/etc/yantra/host_secrets.env"` in `core/hybrid_router.py` to target the host's payload filepath natively.
+
+4. **ArchISO Build Hardening (`compile_iso.sh`)**:
+   - Redirected `mkarchiso` working directory from `/tmp/archiso-tmp` (tmpfs) to physical disk (`work/`) to resolve "No space left on device" errors caused by Wayland/NVIDIA packages expanding airootfs beyond RAM limits.
+   - Hardened `pip install` commands with `--retries 10 --timeout 120` to survive flaky PyPI connections during ISO builds, ensuring large packages like `chromadb` successfully install.
+   - Dynamically injected `["/root/.automated_script.sh"]="0:0:0755"` into `profiledef.sh` via Phase 4 to resolve boot script execution permissions.
+
+5. **Yantra User & Cage Wayland Initialization**:
+   - Added `yantra_user` (UID 1000) directly to `airootfs/etc/passwd` and created the `yantra_user` group (GID 1000) in `airootfs/etc/group`. Added structural group memberships (`video`, `render`) for GPU access.
+   - Introduced Phase 3.6b in `compile_iso.sh` to explicitly `install -dm700` the `/home/yantra_user` directory, resolving "No such file or directory" during live session login.
+   - Bound `XDG_RUNTIME_DIR=/run/user/1000` to the Cage kiosk execution command and pre-created the runtime directory prior to invoking `su - yantra_user`. This eliminates the `DQUANTUM_ID` authentication error.
 
 ---
 
