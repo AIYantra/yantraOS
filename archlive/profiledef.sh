@@ -35,7 +35,7 @@ airootfs_image_tool_options=('-comp' 'zstd' '-Xcompression-level' '15' '-b' '1M'
 # Security invariants:
 #   • /etc/shadow and /etc/gshadow: 0400 (root-only read, no group, no other)
 #   • /opt/yantra/core: 0755 (root-owned, world-executable but tamper-proof)
-#   • /etc/yantra/secrets.env: 0600 (root-only read/write — API credentials)
+#   • /etc/yantra/host_secrets.env: 0600 (root-only read/write — API credentials)
 #   • /run/yantra: 0770 (yantra group can read/write for UDS socket)
 #   • /var/lib/yantra: 0770 (yantra group for ChromaDB persistence)
 #   • Pacman hooks: 0644 (standard config file permissions)
@@ -48,7 +48,7 @@ file_permissions=(
     # ── Security-critical files ───────────────────────────────────────────
     ["/etc/shadow"]="0:0:0400"
     ["/etc/gshadow"]="0:0:0400"
-    ["/etc/yantra/secrets.env"]="0:0:0600"
+    ["/etc/yantra/host_secrets.env"]="0:0:0600"
 
     # ── YantraOS core ────────────────────────────────────────────────────
     ["/opt/yantra/core"]="0:0:0755"
@@ -79,4 +79,10 @@ file_permissions=(
     # ── sysusers / tmpfiles ──────────────────────────────────────────────
     ["/usr/lib/sysusers.d/yantra.conf"]="0:0:0644"
     ["/usr/lib/tmpfiles.d/yantra.conf"]="0:0:0644"
+
+    # ── Boot scripts ─────────────────────────────────────────────────────
+    ["/root/.automated_script.sh"]="0:0:0755"
+
+    # ── yantra_user home ─────────────────────────────────────────────────
+    ["/home/yantra_user"]="1000:1000:0700"
 )

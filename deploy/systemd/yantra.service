@@ -32,7 +32,7 @@ Documentation=https://yantraos.com/docs
 # Wait for the network stack and Docker daemon to be available.
 # The Kriya Loop's SENSE phase probes hardware and the hybrid_router
 # may need network for cloud model fallback.
-After=network-online.target docker.service
+After=network-online.target
 Wants=network-online.target
 After=local-fs.target
 
@@ -54,6 +54,7 @@ Type=notify
 User=yantra_daemon
 Group=yantra
 ExecStart=/opt/yantra/venv/bin/python3 /opt/yantra/core/daemon.py
+Environment=PYTHONPATH=/opt/yantra
 
 # ── Working directory ────────────────────────────────────────────────────────
 WorkingDirectory=/opt/yantra
@@ -61,7 +62,7 @@ WorkingDirectory=/opt/yantra
 # ── Environment ──────────────────────────────────────────────────────────────
 # Load API secrets from the root-owned secrets file.
 # The daemon reads this at startup via hybrid_router._load_secrets().
-EnvironmentFile=-/etc/yantra/secrets.env
+EnvironmentFile=-/etc/yantra/host_secrets.env
 
 # ── Watchdog ─────────────────────────────────────────────────────────────────
 # The daemon must emit WATCHDOG=1 at least once every 30 seconds.

@@ -7,7 +7,7 @@ The 4+2 phase autonomous cycle that drives YantraOS. Each iteration:
   ACT        → Execute corrective/optimization actions (via Docker sandbox)
   REMEMBER   → Persist outcomes as embeddings for one-shot learning (ChromaDB)
 
-  UPDATE_ARCHITECTURE → Emit telemetry to yantraos.com Web HUD (cloud.py)
+  UPDATE_ARCHITECTURE → Emit telemetry to www.yantraos.com Web HUD (cloud.py)
   PATCH               → Fetch skills from Yantra Cloud when resolving unknowns
 
 Milestone 3 integration:
@@ -312,11 +312,11 @@ class KriyaLoopEngine:
 
     async def _phase_update_architecture(self) -> None:
         """
-        Emit real-time telemetry to yantraos.com Web HUD.
+        Emit real-time telemetry to www.yantraos.com Web HUD.
         Non-blocking: failures are logged but never stall the loop.
         """
         self._state.phase = KriyaPhase.UPDATE_ARCHITECTURE
-        log.debug("> DAEMON: [UPDATE_ARCHITECTURE] Emitting telemetry to yantraos.com...")
+        log.debug("> DAEMON: [UPDATE_ARCHITECTURE] Emitting telemetry to www.yantraos.com...")
 
         payload: dict[str, Any] = {
             "daemon_status": "ACTIVE",
@@ -499,7 +499,7 @@ class KriyaLoopEngine:
         self._sd_notify("STOPPING=1")
 
         # Flush subsystems
-        vector_memory.shutdown()
+        await vector_memory.shutdown()  # TRACER BULLET: ensure coroutine is awaited
         sandbox.shutdown()
 
         self._running = False

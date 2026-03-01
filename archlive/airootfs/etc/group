@@ -30,4 +30,7 @@ systemd-journal-remote:x:984:
 systemd-resolve:x:985:
 systemd-timesync:x:986:
 docker:x:998:yantra_daemon
+video:x:986:yantra_daemon,yantra_user
+render:x:987:yantra_daemon,yantra_user
 yantra:x:999:yantra_daemon
+yantra_user:x:1000:

@@ -22,7 +22,7 @@ class GPUHealth(Widget):
         self.stats_container = Vertical()
 
     def compose(self) -> ComposeResult:
-        yield Label("HARDWARE TELEMETRY", classes="pane-title")
+        yield Label("[#888888]HARDWARE TELEMETRY[/]", classes="pane-title")
         yield self.stats_container
 
     def update_stats(self, telemetry: dict) -> None:
@@ -48,19 +48,17 @@ class GPUHealth(Widget):
             power = stat.get("power_w", 0.0)
 
             pct = (vram_used / vram_total * 100) if vram_total else 0
-            vram_color = "gpu-alert" if pct > 85 else "gpu-stat-value"
+            vram_color = "[#FFB000]" if pct > 85 else "[#00E5FF]"
             
-            self.stats_container.mount(Label(f"[{gpu_id}] {name}", classes="gpu-stat-label"))
+            self.stats_container.mount(Label(f"[#888888][{gpu_id}] {name}[/]", classes="gpu-stat-label"))
             self.stats_container.mount(Static(
-                Text.assemble(("Util: ", "gpu-stat-label"), (f"{util}%", "gpu-stat-value"),
-                              (" | Temp: ", "gpu-stat-label"), (f"{temp}°C", "gpu-stat-value"))
+                f"[#888888]Util: [/][#00E5FF]{util}%[/][#888888] | Temp: [/][#00E5FF]{temp}°C[/]"
             ))
             self.stats_container.mount(Static(
-                Text.assemble(("VRAM: ", "gpu-stat-label"), 
-                              (f"{vram_used} / {vram_total} MB", vram_color))
+                f"[#888888]VRAM: [/]{vram_color}{vram_used} / {vram_total} MB[/]"
             ))
             self.stats_container.mount(Static(
-                Text.assemble(("Pwr : ", "gpu-stat-label"), (f"{power:.1f}W", "gpu-stat-value"))
+                f"[#888888]Pwr : [/][#00E5FF]{power:.1f}W[/]"
             ))
             self.stats_container.mount(Static("")) # Spacer
 
@@ -68,13 +66,13 @@ class GPUHealth(Widget):
         status = telemetry.get("daemon_status", "UNKNOWN")
         phase = telemetry.get("current_cycle", {}).get("phase", "NONE")
         
-        self.stats_container.mount(Label("ENGINE STATUS", classes="pane-title"))
-        status_color = "gpu-alert" if status == "ERROR" else "gpu-stat-value"
+        self.stats_container.mount(Label("[#888888]ENGINE STATUS[/]", classes="pane-title"))
+        status_color = "[#FFB000]" if status == "ERROR" else "[#00E5FF]"
         self.stats_container.mount(Static(
-            Text.assemble(("Daemon: ", "gpu-stat-label"), (status, status_color))
+            f"[#888888]Daemon: [/]{status_color}{status}[/]"
         ))
         self.stats_container.mount(Static(
-            Text.assemble(("Phase : ", "gpu-stat-label"), (phase, "gpu-stat-value"))
+            f"[#888888]Phase : [/][#00E5FF]{phase}[/]"
         ))
 
 class ThoughtStream(Widget):
@@ -85,16 +83,19 @@ class ThoughtStream(Widget):
         self.log_container = VerticalScroll(id="thought-scroll")
 
     def compose(self) -> ComposeResult:
-        yield Label("THOUGHT STREAM", classes="pane-title")
+        yield Label("[#888888]THOUGHT STREAM[/]", classes="pane-title")
         yield self.log_container
 
     def push_log(self, text: str) -> None:
         """Push a new log entry to the bottom of the stream."""
         if "[ERROR]" in text:
+            text = text.replace("[ERROR]", "[#FFB000][ERROR][/]")
             classes = "log-entry-error"
         elif "[YANTRA]" in text or ">" in text:
+            text = text.replace("[YANTRA]", "[#00E5FF][YANTRA][/]").replace(">", "[#00E5FF]>[/]")
             classes = "log-entry-info"
         else:
+            text = f"[#888888]{text}[/]"
             classes = "log-entry"
             
         self.log_container.mount(Static(text, classes=classes))

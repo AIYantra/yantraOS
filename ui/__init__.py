@@ -1,0 +1,3 @@
+"""
+YantraOS Shell UI Package
+"""

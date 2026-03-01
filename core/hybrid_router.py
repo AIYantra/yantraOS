@@ -10,8 +10,8 @@ associated with "latency-based" or "cost-based" strategies under local load.
 
 Security invariants:
   • API credentials are NEVER hardcoded. All secrets are loaded exclusively
-    from /etc/yantra/secrets.env (root:root, mode 0600) at module init.
-  • The secrets.env file is read once and the values stored only in
+    from /etc/yantra/host_secrets.env (root:root, mode 0600) at module init.
+  • The host_secrets.env file is read once and the values stored only in
     os.environ; no secrets are written to logs or any other file.
 
 Resilience invariants:
@@ -34,7 +34,7 @@ log = logging.getLogger("yantra.hybrid_router")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-SECRETS_ENV_PATH: str = "/etc/yantra/secrets.env"
+SECRETS_ENV_PATH: str = "/etc/yantra/host_secrets.env"
 
 # Global inference timeout. External cloud APIs (Anthropic, OpenAI, Google)
 # can stall for 30–60 s under load. Capping at 45 s ensures the Kriya Loop
@@ -46,7 +46,7 @@ INFERENCE_TIMEOUT_SECS: float = 45.0
 
 def _load_secrets(path: str = SECRETS_ENV_PATH) -> None:
     """
-    Parse a restricted secrets.env file and inject values into os.environ.
+    Parse a restricted host_secrets.env file and inject values into os.environ.
 
     File format: standard KEY=VALUE lines (no export keyword, no quotes required).
     Empty lines and lines starting with # are ignored.
@@ -54,8 +54,8 @@ def _load_secrets(path: str = SECRETS_ENV_PATH) -> None:
     The file must be owned by root and mode 0600. Any other permission
     configuration is a security violation and will raise RuntimeError.
 
-    Example /etc/yantra/secrets.env:
-        GEMINI_API_KEY=AIza...
+    Example /etc/yantra/host_secrets.env:
+        LITELLM_API_KEY="sk-..."
         ANTHROPIC_API_KEY=sk-ant-...
         OPENAI_API_KEY=sk-...
         OLLAMA_BASE_URL=http://localhost:11434
@@ -65,7 +65,7 @@ def _load_secrets(path: str = SECRETS_ENV_PATH) -> None:
     if not secrets_path.exists():
         log.warning(
             f"> ROUTER: Secrets file not found at {path}. "
-            "Cloud fallbacks will fail. Ensure /etc/yantra/secrets.env is deployed."
+            "Cloud fallbacks will fail. Ensure /etc/yantra/host_secrets.env is deployed."
         )
         return
 
