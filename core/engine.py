@@ -32,16 +32,17 @@ from enum import Enum
 from typing import Any
 
 try:
-    import sdnotify
+    import sdnotify  # type: ignore[import-not-found]
     _SDNOTIFY_AVAILABLE = True
 except ImportError:
+    sdnotify = None  # type: ignore[assignment]
     _SDNOTIFY_AVAILABLE = False
 
 from .prompt import get_system_prompt, get_safety_context
 from .cloud import emit_telemetry, fetch_skill_from_cloud
 from .hardware import probe_gpu, probe_cpu_disk
 from .ipc_server import serve as ipc_serve, set_state_ref, push_log_event
-from .hybrid_router import select_model_group
+from .hybrid_router import select_model_group, stream_complete, INFERENCE_TIMEOUT_SECS
 from .vector_memory import memory as vector_memory, ExecutionRecord
 from .sandbox import sandbox, SandboxStatus
 
@@ -92,16 +93,20 @@ class KriyaState:
     # Log tail for TUI ThoughtStream
     log_tail: list[str] = field(default_factory=list)
 
+    # Interactive command support (pause / resume / inject)
+    is_paused: bool = False
+    injected_thoughts: list[str] = field(default_factory=list)
+
 
 # ── Config ────────────────────────────────────────────────────────
 
 ITERATION_INTERVAL_SECS = 10
 
-# WatchdogSec=15 in yantra.service — the daemon must send WATCHDOG=1
-# at least once every 15 seconds. We calculate the ping interval as
+# WatchdogSec=30s in yantra.service — the daemon must send WATCHDOG=1
+# at least once every 30 seconds. We calculate the ping interval as
 # half the WatchdogSec to provide safety margin.
-WATCHDOG_SEC = 15
-_WATCHDOG_PING_INTERVAL = WATCHDOG_SEC / 2  # 7.5 s
+WATCHDOG_SEC = 30
+_WATCHDOG_PING_INTERVAL = WATCHDOG_SEC / 2  # 15 s
 
 
 # ── Kriya Loop Engine ─────────────────────────────────────────────
@@ -125,7 +130,7 @@ class KriyaLoopEngine:
         # ── sdnotify initialization ────────────────────────────────
         # Instantiate the notifier unconditionally; methods are no-ops
         # if NOTIFY_SOCKET is not set (i.e., not running under systemd).
-        if _SDNOTIFY_AVAILABLE:
+        if sdnotify is not None:
             self._sd = sdnotify.SystemdNotifier()
             self._sd.notify("STATUS=Initializing Kriya Loop...")
         else:
@@ -159,7 +164,7 @@ class KriyaLoopEngine:
         This method is called ONLY after a Kriya phase completes successfully.
         It is NOT dispatched from an independent asyncio.sleep() timer.
         If the cognitive work queue stalls (deadlock), this method is never
-        reached, the watchdog timer expires (WatchdogSec=15), and systemd
+        reached, the watchdog timer expires (WatchdogSec=30s), and systemd
         dispatches SIGABRT → auto-restart.
 
         This is the sole mechanism that keeps the daemon alive.
@@ -202,29 +207,217 @@ class KriyaLoopEngine:
     # ── Phase: REASON ──────────────────────────────────────────────
 
     async def _phase_reason(self) -> None:
-        """Analyze state and form action intent."""
+        """
+        Analyze system state via LLM inference and form action intent.
+
+        Pipeline:
+          1. Injected operator thoughts bypass LLM (highest priority).
+          2. Build yantraos/telemetry/v1 structured context queue.
+          3. Query ChromaDB for semantically similar past outcomes.
+          4. Stream inference from the hybrid router (ollama/llama3 → gemini/gemini-2.5-flash).
+          5. Dispatch thinking tokens to TUI via push_log_event().
+          6. Parse JSON response into pending_actions.
+          7. Fall back to deterministic heuristics on any failure.
+
+        The entire inference call stack is wrapped in asyncio.wait_for()
+        to prevent thread deadlocks.
+        """
         self._state.phase = KriyaPhase.REASON
         self._state.pending_actions = []
         self._state.unresolved_deps = []
         self._push_log("> DAEMON: [REASON] Analyzing system state...")
         log.info("> DAEMON: [REASON] Analyzing system state...")
 
-        # Example heuristics (extend with LLM reasoning)
-        if self._state.disk_free_gb < 5:
+        # ── Injected thoughts take priority over autonomous reasoning ──
+        if self._state.injected_thoughts:
+            thought = self._state.injected_thoughts.pop(0)
+            log.info(f"> INJECT: Prioritizing injected thought: {thought}")
+            self._push_log(f"> INJECT: Executing — {thought}")
+            push_log_event(f"> INJECT: Executing — {thought}")
             self._state.pending_actions.append({
-                "type": "cleanup",
-                "reason": f"Low disk space: {self._state.disk_free_gb:.1f}GB free",
-                "priority": "HIGH",
+                "type": "injected_command",
+                "reason": f"Operator-injected: {thought}",
+                "script": thought,
+                "priority": "CRITICAL",
             })
+            msg = "> REASONING: Injected thought queued for ACT phase."
+            log.info(msg)
+            self._push_log(msg)
+            return
 
-        if self._state.vram_used_gb > 0 and (
-            self._state.vram_used_gb / max(self._state.vram_total_gb, 1)
-        ) > 0.90:
-            self._state.pending_actions.append({
-                "type": "vram_pressure",
-                "reason": "VRAM >90% — consider offloading to cloud inference.",
-                "priority": "MEDIUM",
-            })
+        # ── Build yantraos/telemetry/v1 context queue ──────────────────
+        telemetry_context: dict[str, Any] = {
+            "schema": "yantraos/telemetry/v1",
+            "iteration": self._state.iteration,
+            "hardware": {
+                "vram_used_gb": round(self._state.vram_used_gb, 2),
+                "vram_total_gb": round(self._state.vram_total_gb, 2),
+                "gpu_util_pct": round(self._state.gpu_util_pct, 1),
+                "cpu_pct": round(self._state.cpu_pct, 1),
+                "disk_free_gb": round(self._state.disk_free_gb, 2),
+            },
+            "active_model": self._state.active_model,
+            "inference_routing": self._state.inference_routing,
+            "last_action_results": self._state.last_action_results[-5:],
+            "log_tail_recent": self._state.log_tail[-10:],
+        }
+
+        # ── Query vector memory for historical patterns ────────────────
+        memory_context: list[dict[str, Any]] = []
+        try:
+            telemetry_summary = (
+                f"VRAM {self._state.vram_used_gb:.1f}/{self._state.vram_total_gb:.1f}GB "
+                f"GPU {self._state.gpu_util_pct}% CPU {self._state.cpu_pct}% "
+                f"Disk {self._state.disk_free_gb:.1f}GB"
+            )
+            past_outcomes = await vector_memory.query_executions(
+                telemetry_summary, top_k=3
+            )
+            for result in past_outcomes:
+                memory_context.append({
+                    "document": result.document,
+                    "outcome": result.metadata.get("outcome", "unknown"),
+                    "distance": round(result.distance, 4),
+                })
+        except Exception as exc:
+            log.warning(f"> REASON: Memory query failed (non-fatal): {exc}")
+
+        # ── Construct LLM message payload ──────────────────────────────
+        user_content = json.dumps({
+            "telemetry": telemetry_context,
+            "memory_context": memory_context,
+            "instruction": (
+                "Analyze the telemetry snapshot above. Identify anomalies, "
+                "inefficiencies, or optimization opportunities. If action is "
+                "warranted, respond with a JSON object containing a \"actions\" "
+                "array where each element has \"type\", \"reason\", \"script\" "
+                "(optional shell command), and \"priority\" (CRITICAL/HIGH/MEDIUM/LOW). "
+                "If the system is nominal, respond with {\"actions\": []}. "
+                "Respond ONLY with valid JSON."
+            ),
+        }, indent=2)
+
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+
+        # ── Stream LLM inference with deadlock guard ───────────────────
+        accumulated_response = ""
+        try:
+            push_log_event("> REASONING: Streaming inference...")
+            self._push_log("> REASONING: Streaming inference...")
+
+            async def _stream_and_collect() -> str:
+                """Iterate the async token stream, dispatching each chunk to the TUI."""
+                collected = ""
+                async for token in stream_complete(
+                    messages, model=self._state.active_model
+                ):
+                    collected += token
+                    # Format and dispatch each chunk to the TUI ThoughtStream
+                    push_log_event(f"> THINKING: {token}")
+                return collected
+
+            accumulated_response = await asyncio.wait_for(
+                _stream_and_collect(),
+                timeout=INFERENCE_TIMEOUT_SECS,
+            )
+
+            log.info(
+                f"> REASON: Inference complete — "
+                f"{len(accumulated_response)} chars received."
+            )
+            self._push_log(
+                f"> REASONING: Inference complete "
+                f"({len(accumulated_response)} chars)."
+            )
+            push_log_event("> REASONING: Inference complete.")
+
+        except asyncio.TimeoutError:
+            err = (
+                f"> REASON: Inference timeout after {INFERENCE_TIMEOUT_SECS}s "
+                "— falling back to heuristics."
+            )
+            log.error(err)
+            self._push_log(err)
+            push_log_event(err)
+        except Exception as exc:
+            err = f"> REASON: Inference failed — {type(exc).__name__}: {exc}"
+            log.error(err)
+            self._push_log(err)
+            push_log_event(err)
+
+            # ── Graceful fallback: reset to local model ────────────────
+            # If the active model is a cloud endpoint, the same error will
+            # repeat every iteration → permanent crash-loop. Demote to
+            # local inference so the daemon stays alive.
+            if self._state.active_model != "local/llama3":
+                fallback_msg = (
+                    f"> REASON: LiteLLM error on {self._state.active_model} — "
+                    "falling back to local/llama3 for next iteration."
+                )
+                log.warning(fallback_msg)
+                self._push_log(fallback_msg)
+                push_log_event(fallback_msg)
+                self._state.active_model = "local/llama3"
+                self._state.inference_routing = "LOCAL_FALLBACK"
+
+        # ── Parse LLM response into pending_actions ────────────────────
+        if accumulated_response:
+            try:
+                # Strip markdown code fences if present
+                cleaned = accumulated_response.strip()
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.split("\n", 1)[-1]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned.rsplit("```", 1)[0]
+                cleaned = cleaned.strip()
+
+                parsed = json.loads(cleaned)
+                actions = parsed.get("actions", [])
+                for action in actions:
+                    if isinstance(action, dict) and "type" in action:
+                        self._state.pending_actions.append({
+                            "type": action["type"],
+                            "reason": action.get("reason", "LLM-inferred"),
+                            "script": action.get("script"),
+                            "priority": action.get("priority", "MEDIUM"),
+                        })
+                msg = (
+                    f"> REASONING: LLM proposed "
+                    f"{len(self._state.pending_actions)} action(s)."
+                )
+                log.info(msg)
+                self._push_log(msg)
+                push_log_event(msg)
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                log.warning(
+                    f"> REASON: Failed to parse LLM response as JSON: {exc}. "
+                    "Falling back to deterministic heuristics."
+                )
+                self._push_log("> REASONING: Parse failed — using heuristics.")
+                push_log_event("> REASONING: Parse failed — using heuristics.")
+                # Clear any partial actions from failed parse
+                self._state.pending_actions = []
+
+        # ── Deterministic heuristic fallback ───────────────────────────
+        # Always evaluate heuristics if LLM produced zero actions.
+        if not self._state.pending_actions:
+            if self._state.disk_free_gb < 5:
+                self._state.pending_actions.append({
+                    "type": "cleanup",
+                    "reason": f"Low disk space: {self._state.disk_free_gb:.1f}GB free",
+                    "priority": "HIGH",
+                })
+            if self._state.vram_used_gb > 0 and (
+                self._state.vram_used_gb / max(self._state.vram_total_gb, 1)
+            ) > 0.90:
+                self._state.pending_actions.append({
+                    "type": "vram_pressure",
+                    "reason": "VRAM >90% — consider offloading to cloud inference.",
+                    "priority": "MEDIUM",
+                })
 
         msg = f"> REASONING: Formed {len(self._state.pending_actions)} action(s)."
         log.info(msg)
@@ -253,23 +446,135 @@ class KriyaLoopEngine:
             reason = action["reason"]
             log.info(f"> ACTION: {action_type} — {reason}")
 
-            # If the action has a script payload and sandbox is healthy, execute it
             script = action.get("script")
-            if script and sandbox.is_operational:
+
+            # ── Injected commands: ALWAYS execute (sandbox → host fallback) ──
+            if action_type == "injected_command" and script:
+                executed = False
+                result: dict = {}
+
+                # Attempt 1: Docker sandbox (if operational)
+                if sandbox.is_operational:
+                    try:
+                        sandbox_result = await sandbox.execute(script)
+                        result = {
+                            "action": action_type,
+                            "status": sandbox_result.outcome.value,
+                            "exit_code": sandbox_result.exit_code,
+                            "stdout": sandbox_result.stdout[:2000],
+                            "stderr": getattr(sandbox_result, "stderr", "")[:1000],
+                            "ts": time.time(),
+                        }
+                        status_msg = (
+                            f"> ACTION: {action_type} — sandbox "
+                            f"{sandbox_result.outcome.value} "
+                            f"(exit={sandbox_result.exit_code}, "
+                            f"{sandbox_result.duration_secs:.1f}s)"
+                        )
+                        self._push_log(status_msg)
+                        push_log_event(status_msg)
+
+                        stdout_text = (sandbox_result.stdout or "").strip()
+                        stderr_text = (getattr(sandbox_result, "stderr", "") or "").strip()
+                        executed = True
+                    except Exception as exc:
+                        warn = f"> ACTION: Sandbox execution failed: {exc} — falling back to host."
+                        log.warning(warn)
+                        self._push_log(warn)
+                        push_log_event(warn)
+
+                # Attempt 2: Direct host execution (fallback)
+                if not executed:
+                    fallback_msg = f"> ACTION: Executing on host — {script}"
+                    log.info(fallback_msg)
+                    self._push_log(fallback_msg)
+                    push_log_event(fallback_msg)
+                    try:
+                        proc = await asyncio.create_subprocess_shell(
+                            script,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        )
+                        raw_stdout, raw_stderr = await asyncio.wait_for(
+                            proc.communicate(), timeout=30.0
+                        )
+                        stdout_text = (raw_stdout or b"").decode(errors="replace").strip()
+                        stderr_text = (raw_stderr or b"").decode(errors="replace").strip()
+                        exit_code = proc.returncode or 0
+                        result = {
+                            "action": action_type,
+                            "status": "success" if exit_code == 0 else "failure",
+                            "exit_code": exit_code,
+                            "stdout": stdout_text[:2000],
+                            "stderr": stderr_text[:1000],
+                            "ts": time.time(),
+                        }
+                        status_msg = (
+                            f"> ACTION: {action_type} — host exec "
+                            f"(exit={exit_code})"
+                        )
+                        self._push_log(status_msg)
+                        push_log_event(status_msg)
+                    except asyncio.TimeoutError:
+                        stdout_text, stderr_text = "", "Execution timed out (30s)"
+                        result = {"action": action_type, "status": "timeout", "exit_code": -1, "ts": time.time()}
+                        err_msg = f"> ACTION: {action_type} — TIMEOUT (30s limit)"
+                        self._push_log(err_msg)
+                        push_log_event(err_msg)
+                    except Exception as exc:
+                        stdout_text, stderr_text = "", str(exc)
+                        result = {"action": action_type, "status": "error", "exit_code": -1, "ts": time.time()}
+                        err_msg = f"> ACTION: {action_type} — execution error: {exc}"
+                        self._push_log(err_msg)
+                        push_log_event(err_msg)
+
+                # ── Broadcast stdout/stderr to TUI ThoughtStream via SSE ──
+                if stdout_text:
+                    for line in stdout_text[:2000].splitlines():
+                        out_msg = f"> STDOUT: {line}"
+                        self._push_log(out_msg)
+                        push_log_event(out_msg)
+
+                if stderr_text:
+                    for line in stderr_text[:1000].splitlines():
+                        err_msg = f"> STDERR: {line}"
+                        self._push_log(err_msg)
+                        push_log_event(err_msg)
+
+            # ── Autonomous actions: require operational sandbox ───────────
+            elif script and sandbox.is_operational:
                 sandbox_result = await sandbox.execute(script)
                 result = {
                     "action": action_type,
                     "status": sandbox_result.outcome.value,
                     "exit_code": sandbox_result.exit_code,
-                    "stdout": sandbox_result.stdout[:500],  # Truncate for log
+                    "stdout": sandbox_result.stdout[:500],
                     "ts": time.time(),
                 }
-                self._push_log(
+                status_msg = (
                     f"> ACTION: {action_type} — sandbox {sandbox_result.outcome.value} "
                     f"(exit={sandbox_result.exit_code}, {sandbox_result.duration_secs:.1f}s)"
                 )
+                self._push_log(status_msg)
+                push_log_event(status_msg)
+
+                stdout_text = (sandbox_result.stdout or "").strip()
+                stderr_text = getattr(sandbox_result, "stderr", "") or ""
+                stderr_text = stderr_text.strip()
+
+                if stdout_text:
+                    for line in stdout_text[:2000].splitlines():
+                        out_msg = f"> STDOUT: {line}"
+                        self._push_log(out_msg)
+                        push_log_event(out_msg)
+
+                if stderr_text:
+                    for line in stderr_text[:1000].splitlines():
+                        err_msg = f"> STDERR: {line}"
+                        self._push_log(err_msg)
+                        push_log_event(err_msg)
             else:
-                # No script or sandbox degraded — log only
+                # No script or sandbox degraded for non-injected actions
                 result = {"action": action_type, "status": "logged", "ts": time.time()}
                 if script and not sandbox.is_operational:
                     self._push_log(
@@ -392,7 +697,7 @@ class KriyaLoopEngine:
 
         Watchdog invariant:
           WATCHDOG=1 is sent ONLY after each phase completes successfully.
-          If the loop deadlocks, the ping ceases, WatchdogSec=15 expires,
+          If the loop deadlocks, the ping ceases, WatchdogSec=30s expires,
           and systemd dispatches SIGABRT → auto-restart.
         """
         self._register_signals()
@@ -441,6 +746,15 @@ class KriyaLoopEngine:
 
         # ── Main cognitive loop ────────────────────────────────────
         while not self._state.shutdown_requested:
+            # ── Pause gate ─────────────────────────────────────────
+            # When paused, idle the loop but keep the watchdog alive
+            # so systemd does not kill the daemon.
+            if self._state.is_paused:
+                self._sd_watchdog_ping()
+                self._sd_notify("STATUS=Kriya Loop PAUSED")
+                await asyncio.sleep(1)
+                continue
+
             iter_start = time.monotonic()
             self._state.iteration += 1
             msg = f"> DAEMON: — Iteration #{self._state.iteration} —"
@@ -451,7 +765,7 @@ class KriyaLoopEngine:
             try:
                 # Each successful phase completion pings the watchdog.
                 # If any phase deadlocks, the ping ceases and systemd
-                # detects the stall via WatchdogSec=15.
+                # detects the stall via WatchdogSec=30s.
 
                 await self._phase_sense()
                 self._sd_watchdog_ping()
@@ -499,7 +813,7 @@ class KriyaLoopEngine:
         self._sd_notify("STOPPING=1")
 
         # Flush subsystems
-        await vector_memory.shutdown()  # TRACER BULLET: ensure coroutine is awaited
+        vector_memory.shutdown()  # TRACER BULLET: ensure coroutine is awaited
         sandbox.shutdown()
 
         self._running = False
