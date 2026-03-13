@@ -1,11 +1,14 @@
+#!/bin/bash
 # /etc/profile.d/yantra_kiosk.sh
+# YantraOS — Pure TUI Auto-Launch (tty1 only)
+# No Wayland, no cage, no compositor. Pure framebuffer TUI.
+#
+# Using exec replaces the login shell entirely. When the user exits
+# the TUI via Ctrl+C, it safely drops to a fresh login prompt instead
+# of leaving a root shell open.
 
-# Only execute on the primary physical console (tty1)
-if [ "$(tty)" = "/dev/tty1" ]; then
-    # Force colors for the framebuffer
-    export TERM=linux
-    export COLORTERM=truecolor
-    
-    # Execute the Yantra Shell directly to the screen
-    /opt/yantra/venv/bin/python3 /opt/yantra/core/tui_shell.py
+# YantraOS Auto-Ignition Sequence
+if [[ "$(tty)" == "/dev/tty1" ]]; then
+    echo "[YANTRA] Igniting Control Center..."
+    exec /opt/yantra/venv/bin/python3 /opt/yantra/core/tui_shell.py
 fi
