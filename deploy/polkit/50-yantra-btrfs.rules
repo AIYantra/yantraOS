@@ -4,8 +4,8 @@
 //
 // PURPOSE:
 //   Authorizes the yantra_daemon user to execute ONLY /usr/bin/btrfs
-//   and /usr/bin/pacman via pkexec without an interactive password prompt.
-//   This is the sole privilege escalation vector in the entire system.
+//   via pkexec without an interactive password prompt.
+//   This is the sole privilege escalation vector for BTRFS operations.
 //
 // SECURITY CONSTRAINTS:
 //   • Validates requesting user identity (yantra_daemon)
@@ -13,6 +13,9 @@
 //   • Validates exact absolute binary path — NO wildcards, NO directory
 //     approvals, NO regex, NO glob patterns
 //   • Falls through to default deny for all non-matching requests
+//
+// PRIVILEGE CHAIN:
+//   yantra_daemon → pkexec → polkitd → 50-yantra-btrfs.rules → /usr/bin/btrfs
 
 polkit.addRule(function(action, subject) {
     // Gate 1: Only intercept pkexec authorization requests.
@@ -28,10 +31,10 @@ polkit.addRule(function(action, subject) {
     // Gate 3: Extract the exact binary path from the pkexec request.
     var program = action.lookup("program");
 
-    // Gate 4: Permit ONLY the two explicitly sanctioned binaries.
-    //   /usr/bin/btrfs  — filesystem snapshot creation and rollback
-    //   /usr/bin/pacman — system package orchestration
-    if (program === "/usr/bin/btrfs" || program === "/usr/bin/pacman") {
+    // Gate 4: Permit ONLY the single explicitly sanctioned binary.
+    //   /usr/bin/btrfs — filesystem snapshot creation, rollback, and pruning.
+    //   NO wildcards. NO additional binaries. Strict path equality only.
+    if (program === "/usr/bin/btrfs") {
         // Log the authorized escalation for audit trail.
         polkit.log("YantraOS: Authorized pkexec for " + program +
                    " by user " + subject.user +
