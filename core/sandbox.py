@@ -44,14 +44,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
-import string
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from functools import partial
-from typing import Any, Final, FrozenSet
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Final, FrozenSet
+
+if TYPE_CHECKING:
+    import docker  # noqa: F811 — static analysis only
 
 log = logging.getLogger("yantra.sandbox")
 
@@ -70,18 +74,20 @@ ALLOWED_IMAGES: Final[FrozenSet[str]] = frozenset({
     "alpine:3.20",
     "alpine:latest",
     "yantra-agent:latest",
+    "yantra-sandbox:latest",
 })
 
-# Default sandbox image — minimal Alpine (~5 MB), POSIX shell only.
-SANDBOX_IMAGE: Final[str] = "alpine:3.19"
+# Default sandbox image — custom hardened Alpine with bash + coreutils.
+# Built programmatically from core/sandbox/Dockerfile if not found locally.
+SANDBOX_IMAGE: Final[str] = "yantra-sandbox:latest"
 
 # ── Execution Limits ─────────────────────────────────────────────────────────
-EXECUTION_TIMEOUT_SECS: Final[int] = 30     # Default hard-kill deadline
+EXECUTION_TIMEOUT_SECS: Final[int] = 10     # Default hard-kill deadline
 MAX_TIMEOUT_SECS: Final[int] = 120          # Upper bound, non-negotiable
 MIN_TIMEOUT_SECS: Final[int] = 1            # Lower bound
 
 # ── cgroups Constraints ──────────────────────────────────────────────────────
-CONTAINER_MEM_LIMIT: Final[str] = "512m"    # OOM-killed at 512 MiB
+CONTAINER_MEM_LIMIT: Final[str] = "128m"    # OOM-killed at 128 MiB
 CONTAINER_CPU_QUOTA: Final[int] = 50000     # 50% of one core (period=100 ms)
 CONTAINER_TMPFS_SIZE: Final[str] = "64m"    # Writable scratch cap
 CONTAINER_PIDS_LIMIT: Final[int] = 64       # Fork bomb protection
@@ -96,10 +102,7 @@ MAX_ENV_VAL_LEN: Final[int] = 1024          # Max chars per env value (1 KiB)
 # This prevents shell injection via crafted variable names like `$(cmd)`.
 _ENV_KEY_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# Printable ASCII set for value validation (no control chars except space).
-_PRINTABLE_SET: Final[frozenset[str]] = frozenset(string.printable) - frozenset(
-    string.whitespace.replace(" ", "").replace("\n", "")
-)
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -429,7 +432,7 @@ class SandboxEngine:
         # ── Step 2: Instantiate client ────────────────────────────────────
         try:
             self._client = docker.from_env()
-        except docker.errors.DockerException as exc:
+        except docker.errors.DockerException as exc:  # type: ignore[attr-defined]
             log.error(
                 f"> SANDBOX: Failed to connect to Docker daemon: {exc}. "
                 "Is the Docker service running? Sandbox DEGRADED."
@@ -449,20 +452,40 @@ class SandboxEngine:
             self._client = None
             return SandboxStatus.DEGRADED
 
-        # ── Step 4: Ensure base image is available ────────────────────────
+        # ── Step 4: Ensure sandbox image is available ─────────────────────
+        # If yantra-sandbox:latest is not found locally, build it from the
+        # Dockerfile shipped in core/sandbox/. This avoids any dependency
+        # on an external registry and guarantees a deterministic image.
         try:
             self._client.images.get(SANDBOX_IMAGE)
-            log.info(f"> SANDBOX: Base image {SANDBOX_IMAGE} confirmed locally.")
-        except docker.errors.ImageNotFound:
-            log.info(f"> SANDBOX: Pulling base image {SANDBOX_IMAGE}...")
+            log.info(f"> SANDBOX: Image {SANDBOX_IMAGE} confirmed locally.")
+        except docker.errors.ImageNotFound:  # type: ignore[attr-defined]
+            log.info(
+                f"> SANDBOX: Image {SANDBOX_IMAGE} not found. "
+                "Building from core/sandbox/Dockerfile..."
+            )
             try:
-                self._client.images.pull(SANDBOX_IMAGE)
-                log.info(f"> SANDBOX: Pull complete — {SANDBOX_IMAGE}")
-            except Exception as exc:
-                log.warning(
-                    f"> SANDBOX: Failed to pull {SANDBOX_IMAGE}: {exc}. "
-                    "Will attempt at execution time."
+                # Resolve the Dockerfile directory relative to this module.
+                dockerfile_dir = str(
+                    Path(os.path.abspath(__file__)).parent / "sandbox"
                 )
+                _image, _build_log = self._client.images.build(
+                    path=dockerfile_dir,
+                    tag=SANDBOX_IMAGE,
+                    rm=True,           # Remove intermediate containers
+                    forcerm=True,      # Remove even on failure
+                    quiet=False,
+                )
+                log.info(
+                    f"> SANDBOX: Build complete — {SANDBOX_IMAGE} "
+                    f"(id={_image.short_id})"
+                )
+            except Exception as exc:
+                log.error(
+                    f"> SANDBOX: Failed to build {SANDBOX_IMAGE}: {exc}. "
+                    "Sandbox will be DEGRADED."
+                )
+                return SandboxStatus.DEGRADED
 
         info: dict[str, Any] = self._client.info()
         log.info(
@@ -620,7 +643,7 @@ class SandboxEngine:
         ║  │ Parameter               │ Hardcoded Value            │    ║
         ║  ├─────────────────────────┼────────────────────────────┤    ║
         ║  │ network_mode            │ "none"                     │    ║
-        ║  │ mem_limit               │ "512m"                     │    ║
+        ║  │ mem_limit               │ "128m"                     │    ║
         ║  │ cpu_quota               │ 50000 (50% single core)    │    ║
         ║  │ pids_limit              │ 64 (fork bomb protection)  │    ║
         ║  │ read_only               │ True                       │    ║
@@ -722,7 +745,7 @@ class SandboxEngine:
                 # Execute as the unprivileged 'nobody' user (UID 65534).
                 # Even inside the container, the process has no ownership
                 # of any files and cannot modify the image's filesystem.
-                user="nobody",
+                user="sandbox_user",
 
                 # ── EXPLICIT UNPRIVILEGED ──────────────────────────────────
                 # Redundant but intentional: explicitly set privileged=False
@@ -763,7 +786,7 @@ class SandboxEngine:
                 script_hash=script_hash,
             )
 
-        except docker.errors.ContainerError as exc:
+        except docker.errors.ContainerError as exc:  # type: ignore[attr-defined]
             elapsed = time.monotonic() - t_start
             stderr_text: str = (
                 exc.stderr.decode("utf-8", errors="replace")
@@ -786,7 +809,7 @@ class SandboxEngine:
                 script_hash=script_hash,
             )
 
-        except docker.errors.ImageNotFound:
+        except docker.errors.ImageNotFound:  # type: ignore[attr-defined]
             log.error(
                 f"> SANDBOX: Image {image} not found. "
                 f"Script [{script_hash}] aborted."
@@ -797,7 +820,7 @@ class SandboxEngine:
                 error=f"Image not found: {image}",
             )
 
-        except docker.errors.APIError as exc:
+        except docker.errors.APIError as exc:  # type: ignore[attr-defined]
             log.error(
                 f"> SANDBOX: Docker API error for [{script_hash}]: {exc}"
             )
