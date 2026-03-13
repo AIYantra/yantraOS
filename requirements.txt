@@ -1,0 +1,19 @@
+# YantraOS — Python Dependencies
+# ═══════════════════════════════════════════════════════════════════
+
+# Core Daemon
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+litellm>=1.35.0
+chromadb>=0.5.0
+sdnotify>=0.3.0
+pynvml>=12.0.0
+psutil>=5.9.0
+httpx>=0.27.0
+
+# Docker SDK — required by core/sandbox.py for container orchestration
+docker>=7.0.0
+
+# Pure TUI Interface
+textual>=0.76.0
+rich>=13.7.1
