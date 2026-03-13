@@ -442,7 +442,7 @@ When the inference engine generates code to execute:
 2. Spins up ephemeral Alpine Linux container via `docker-py` (`core/sandbox.py`).
 3. Container runs with the following **non-negotiable security matrix**:
    - `network_mode="none"` — zero network access (prevents exfiltration)
-   - `mem_limit="512m"` — OOM-killed at 512 MiB
+   - `mem_limit="128m"` — OOM-killed at 128 MiB
    - `cpu_quota=50000` — 50% of one CPU core maximum
    - `pids_limit=64` — fork bomb protection
    - `read_only=True` — immutable root filesystem
@@ -450,7 +450,7 @@ When the inference engine generates code to execute:
    - `security_opt=["no-new-privileges:true"]` — blocks setuid/setgid escalation
    - `auto_remove=True` — container destroyed immediately after exit
    - `tmpfs /tmp: size=64m, noexec, nosuid` — capped writable scratch
-   - `user="nobody"` — runs as UID 65534
+   - `user="sandbox_user"` — runs as UID 1000 (custom unprivileged user)
    - `privileged=False` — explicit denial (defense-in-depth)
 4. **Prohibition by Omission**: `volumes`, `binds`, `privileged`, `cap_add`, `pid_mode`, `ipc_mode`, `devices` parameters are **structurally absent** from the `execute()` method signature. No caller — including an LLM generating function calls — can inject them.
 5. **Image Allowlist**: Only `alpine:3.19`, `alpine:3.20`, `alpine:latest`, `yantra-agent:latest` are permitted. All other images rejected with `VALIDATION_ERROR`.
@@ -654,6 +654,63 @@ The daemon emits `yantraos/telemetry/v1` JSON (see §3.2) via:
    - Added `yantra_user` (UID 1000) directly to `airootfs/etc/passwd` and created the `yantra_user` group (GID 1000) in `airootfs/etc/group`. Added structural group memberships (`video`, `render`) for GPU access.
    - Introduced Phase 3.6b in `compile_iso.sh` to explicitly `install -dm700` the `/home/yantra_user` directory, resolving "No such file or directory" during live session login.
    - Bound `XDG_RUNTIME_DIR=/run/user/1000` to the Cage kiosk execution command and pre-created the runtime directory prior to invoking `su - yantra_user`. This eliminates the `DQUANTUM_ID` authentication error.
+
+---
+
+## 16. Milestone 7: Pure TUI v0.3.0 & Sandbox Fallback Execution (March 2026)
+
+1. **Wayland Purge & Pure TUI Architecture**:
+   - Eliminated `cage`, `sway`, `alacritty`, `grim`, `slurp`, and `wl-clipboard` from `archlive/packages.x86_64`.
+   - Stripped all `wayland` initialization logic out of `archlive/compile_iso.sh` boot script.
+   - Live ISO now boots directly into `tty1` running the Textual-based `core/tui_shell.py` via `yantra_user`.
+
+2. **TUI Interactive Command Router (IPC Bridge)**:
+   - Built a custom `Input` widget command bar at the bottom of the TUI tracking: `pause_loop`, `resume_loop`, `inject <cmd>`.
+   - **Pause/Resume**: Commands are serialized as `{"action": "pause_loop"}` / `{"action": "resume_loop"}` over the `/run/yantra/ipc.sock` socket. 
+   - Engine (`core/engine.py`) reads `self._state.is_paused` and effectively idles the `_phase_sense` loop when paused to grant the operator manual oversight.
+
+3. **Injected Command Sandbox Fallback Execution**:
+   - `core/engine.py` re-engineered `_phase_act` to grant operator `injected_command` actions a dedicated, two-stage execution cascade:
+   - **Stage 1 (Isolated)**: Attempt execution via `sandbox.execute(script)` (Alpine container).
+   - **Stage 2 (Host Fallback)**: If sandbox is `DEGRADED` (e.g., Docker daemon offline on live boot) or throws an exception, engine gracefully falls back to direct `asyncio.create_subprocess_shell` execution on the Arch host with a 30s timeout.
+   - Autonomous LLM actions remain strictly bound to Stage 1. They are structurally denied host fallback to preserve the security boundary.
+
+4. **SSE ThoughtStream Broadcast Extension**:
+   - Both Stage 1 (Sandbox) and Stage 2 (Host) execution paths now actively pipe `stdout` (truncated to 2000 chars) and `stderr` (truncated to 1000 chars) back through the `push_log_event()` SSE stream.
+   - Ensures deep visibility for the operator: what happens in the engine natively reflects in the TUI HUD in real-time.
+
+5. **Boot Sequence Stabilization**:
+   - Explicitly injected `systemctl start docker` into the `compile_iso.sh` generation of `.automated_script.sh` just before starting `yantra.service`.
+   - Corrected heredoc `if`/`fi` bash syntax in the TTY1 boot execution logic preventing crashes.
+
+---
+
+## 17. Milestone 8: Live ISO Bare-Metal Hardening (RC5–RC7) (March 2026)
+
+1. **State Cleansing & Amnesia Protocol (`compile_iso.sh`)**:
+   - Prevented the host's Kriya Loop iteration state from bleeding into the ISO by injecting commands to purge `*.json` state trackers and `__pycache__` artifacts from `/opt/yantra/` during the staging phase.
+   - Cleansed legacy ChromaDB vector fragments by aggressively wiping `/var/lib/yantra/chromadb` and `core/chromadb` from the build overlay.
+
+2. **Cryptographic Sanitization (`compile_iso.sh`)**:
+   - Resolved the `Vertex_ai_betaException` systemd load failure by explicitly targeting `host_secrets.env` inside the `airootfs` with `sed` strips, removing all single quotes `'`, double quotes `"`, and trailing spaces inserted by shell variable expansion.
+   - Inserted a robust pre-flight check failing the ISO compile if `GEMINI_API_KEY` is missing.
+
+3. **Daemon Deep Runtime Scan (`core/engine.py` & `yantra.service`)**:
+   - Aligned `WATCHDOG_SEC = 30` in Python to match `WatchdogSec=30s` in systemd (previously mismatched at 15s).
+   - Confirmed `READY=1` sdnotify signaling logic completes correctly for `Type=notify`. All critical execution and inference phases assert safe exception trapping.
+
+4. **Docker VFS Injection (Sandbox Stability)**:
+   - Fixed a fatal Docker daemon crash caused by attempting to nest the `overlay2` storage driver inside Archiso's root `overlayfs`.
+   - Injected `/etc/docker/daemon.json` into the `airootfs` forcing the fallback `"storage-driver": "vfs"`. This sacrifices I/O speed but guarantees sandbox isolation survives a Live USB environment.
+
+5. **Definitive Bootloader Persistence Anchor**:
+   - Enforced permanent physical partition mounting for Yantra's RAG databases by targeting `cow_label=yantra_cow cow_spacesize=8G`.
+   - Executed a global patch across all *9* bootloader configurations: `grub.cfg`, `loopback.cfg`, `archiso_sys-linux.cfg`, `archiso_pxe-linux.cfg`, `01-archiso-linux.conf`, and `02-archiso-speech-linux.conf`—ensuring total resilience regardless of BIOS/UEFI firmware routing.
+
+6. **Bare-Metal NVIDIA GPU Acceleration**:
+   - Hardcoded `nvidia` and `nvidia-settings` directly into the `packages.x86_64` manifest for `mkarchiso` to pull the proprietary matrix.
+   - Activated the **Nouveau Killswitch**: Appended `nouveau.modeset=0 nvidia-drm.modeset=1` to all *11* kernel execution boot lines to mathematically eliminate open-source driver conflicts.
+   - Wrote `airootfs/etc/mkinitcpio.conf` specifying `MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)` to assure early-boot KMS initialization before any console or shell instantiation.
 
 ---
 
