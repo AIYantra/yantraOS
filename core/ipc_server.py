@@ -156,6 +156,9 @@ async def command(request: Request) -> JSONResponse:
       • {"action": "shutdown"}    — request graceful daemon shutdown
       • {"action": "ping"}        — roundtrip latency check
       • {"action": "get_phase"}   — return current Kriya phase name
+      • {"action": "pause"}       — pause the Kriya Loop
+      • {"action": "resume"}      — resume the Kriya Loop
+      • {"action": "inject", "payload": "..."}  — inject a thought/command
     """
     try:
         body = await request.json()
@@ -176,6 +179,44 @@ async def command(request: Request) -> JSONResponse:
             _state_ref.shutdown_requested = True  # type: ignore[attr-defined]
             log.info("> IPC: Shutdown requested via /command endpoint.")
         return JSONResponse({"status": "shutdown_requested"})
+
+    if action == "pause":
+        if _state_ref is not None:
+            _state_ref.is_paused = True  # type: ignore[attr-defined]
+            log.info("> IPC: Kriya Loop PAUSED via /command endpoint.")
+        return JSONResponse({"status": "paused"})
+
+    if action == "resume":
+        if _state_ref is not None:
+            _state_ref.is_paused = False  # type: ignore[attr-defined]
+            log.info("> IPC: Kriya Loop RESUMED via /command endpoint.")
+        return JSONResponse({"status": "resumed"})
+
+    if action == "inject":
+        payload = body.get("payload", "")
+        if not payload:
+            return JSONResponse(
+                {"error": "inject requires a non-empty 'payload' field"},
+                status_code=400,
+            )
+        if _state_ref is not None:
+            _state_ref.injected_thoughts.append(payload)  # type: ignore[attr-defined]
+            log.info(f"> IPC: Injected thought — {payload!r}")
+        return JSONResponse({"status": "injected", "payload": payload})
+
+    if action == "set_model":
+        route = body.get("route", "")
+        model = body.get("model", "")
+        if not route or not model:
+            return JSONResponse(
+                {"error": "set_model requires non-empty 'route' and 'model' fields"},
+                status_code=400,
+            )
+        if _state_ref is not None:
+            _state_ref.active_model      = model        # type: ignore[attr-defined]
+            _state_ref.inference_routing = route        # type: ignore[attr-defined]
+            log.info(f"> IPC: Model changed — route={route!r}, model={model!r}")
+        return JSONResponse({"status": "model_set", "route": route, "model": model})
 
     return JSONResponse({"error": f"Unknown action: '{action}'"}, status_code=400)
 
