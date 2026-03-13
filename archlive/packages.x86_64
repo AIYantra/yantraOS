@@ -134,6 +134,8 @@ nvidia-dkms
 nvidia-utils
 lib32-nvidia-utils
 opencl-nvidia
+nvidia
+nvidia-settings
 vulkan-radeon
 lib32-vulkan-radeon
 vulkan-intel
@@ -141,11 +143,11 @@ lib32-vulkan-intel
 pciutils
 networkmanager
 iwd
-sway
-cage
-alacritty
 ttf-jetbrains-mono
 inter-font
-grim
-slurp
-wl-clipboard
+docker
+cage
+alacritty
+python
+python-pip
+polkit
