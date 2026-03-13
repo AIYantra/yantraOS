@@ -55,18 +55,8 @@ RELENG_SRC="/usr/share/archiso/configs/releng"
 VENV_BUILD="${AIROOTFS}/opt/yantra/venv"
 VENV_DEPLOY="/opt/yantra/venv"
 
-# Python dependencies for the Kriya Loop daemon
-PIP_REQUIREMENTS=(
-    "fastapi>=0.111.0"
-    "uvicorn[standard]>=0.29.0"
-    "litellm>=1.35.0"
-    "chromadb>=0.5.0"
-    "docker>=7.0.0"
-    "sdnotify>=0.3.0"
-    "pynvml>=12.0.0"
-    "psutil>=5.9.0"
-    "httpx>=0.27.0"
-)
+# Python dependencies for YantraOS
+# Now loaded directly from requirements.txt instead of this hardcoded array.
 
 # ── Color output helpers ──────────────────────────────────────────────────────
 
@@ -96,6 +86,26 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 log_ok "Running as root."
+
+# ── Credential pre-flight ─────────────────────────────────────────────────────
+# RC4 bare-metal revealed ISOs built without valid API keys produce a
+# geometrically broken system — cloud inference fallback silently fails.
+# Fatally abort BEFORE any scaffolding if GEMINI_API_KEY is missing.
+HOST_SECRETS="/etc/yantra/host_secrets.env"
+if [[ ! -f "${HOST_SECRETS}" ]]; then
+    log_error "Secrets file not found: ${HOST_SECRETS}"
+    log_error "Create it with at minimum: GEMINI_API_KEY=<your-key>"
+    exit 1
+fi
+
+# Source the secrets file to validate key presence
+GEMINI_KEY=$(grep -oP '^GEMINI_API_KEY=\K.*' "${HOST_SECRETS}" | tr -d '"' | tr -d "'")
+if [[ -z "${GEMINI_KEY}" || "${GEMINI_KEY}" == "PLACEHOLDER" || "${GEMINI_KEY}" == "your-key-here" ]]; then
+    log_error "GEMINI_API_KEY is missing, empty, or set to a placeholder in ${HOST_SECRETS}"
+    log_error "Refusing to build a geometrically broken ISO without valid inference credentials."
+    exit 1
+fi
+log_ok "GEMINI_API_KEY validated (${#GEMINI_KEY} chars)."
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 # Verify all required commands are available before starting.
@@ -189,14 +199,8 @@ YANTRA_PACKAGES=(
     "networkmanager"
     "iwd"
     "systemd-resolvconf"
-    "sway"
-    "cage"
-    "alacritty"
     "ttf-jetbrains-mono"
     "inter-font"
-    "grim"
-    "slurp"
-    "wl-clipboard"
 )
 
 log_info "Appending YantraOS packages to packages.x86_64..."
@@ -236,6 +240,17 @@ done
 chmod 755 "${AIROOTFS}/opt/yantra/core/daemon.py" 2>/dev/null || true
 chmod 755 "${AIROOTFS}/opt/yantra/core/cli.py" 2>/dev/null || true
 log_ok "Core Python modules staged."
+
+# ── 3.1b: Amnesia Protocol — State Cleansing ─────────────────────────────────
+# RC5 revealed that host-machine state files (kriya_state.json, iteration
+# counters) bled into the ISO, causing the daemon to boot at Iter #29
+# instead of a clean Iter #1. Purge ALL residual state.
+log_info "Executing Amnesia Protocol — purging host state from airootfs..."
+find "${AIROOTFS}/opt/yantra/" -name "*.json" -type f -delete 2>/dev/null || true
+rm -rf "${AIROOTFS}/opt/yantra/core/chromadb" "${AIROOTFS}/var/lib/yantra/chromadb" 2>/dev/null || true
+rm -rf "${AIROOTFS}/opt/yantra/__pycache__" 2>/dev/null || true
+rm -rf "${AIROOTFS}/opt/yantra/core/__pycache__" 2>/dev/null || true
+log_ok "Amnesia Protocol complete — ISO will boot with clean state."
 
 # ── 3.2: Copy deploy configs ─────────────────────────────────────────────────
 
@@ -312,6 +327,16 @@ else
     log_warn "No host_secrets.env in source — empty placeholder created (0600)."
 fi
 
+# ── Cryptographic Sanitization ───────────────────────────────────────────────
+# RC5 revealed that systemd's EnvironmentFile directive passes quote
+# characters LITERALLY — GEMINI_API_KEY="AIza..." becomes the string
+# '"AIza..."' including the quotes, causing LiteLLM to misroute to
+# Vertex AI and reject the key. Strip all quotes and trailing whitespace.
+log_info "Sanitizing staged host_secrets.env (stripping quotes/whitespace)..."
+sed -i "s/['\"]//g" "${AIROOTFS}/etc/yantra/host_secrets.env"
+sed -i 's/[[:space:]]*$//' "${AIROOTFS}/etc/yantra/host_secrets.env"
+log_ok "Secrets sanitized — no embedded quotes or trailing whitespace."
+
 # ── 3.5.1: Host Payload Injection ────────────────────────────────────────────
 # Copy the host-level cryptographic payload into the airootfs secrets path.
 # This injects the actual runtime credentials from the build host into the ISO.
@@ -321,7 +346,11 @@ mkdir -p /home/admin/archlive/airootfs/etc/yantra
 cp /home/admin/Documents/YantraOS/host_secrets.env /home/admin/archlive/airootfs/etc/yantra/host_secrets.env
 chmod 600 /home/admin/archlive/airootfs/etc/yantra/host_secrets.env
 
-log_ok "Host payload injected into /etc/yantra/host_secrets.env (0600 permissions)."
+# Re-sanitize after host payload injection (belt-and-suspenders)
+sed -i "s/['\"]//g" "${AIROOTFS}/etc/yantra/host_secrets.env"
+sed -i 's/[[:space:]]*$//' "${AIROOTFS}/etc/yantra/host_secrets.env"
+
+log_ok "Host payload injected and sanitized (0600 permissions)."
 
 # ── 3.6: Runtime directories ─────────────────────────────────────────────────
 # These directories are needed by the daemon at runtime. They are also
@@ -329,8 +358,10 @@ log_ok "Host payload injected into /etc/yantra/host_secrets.env (0600 permission
 # profiledef.sh can set ownership correctly.
 install -dm770 "${AIROOTFS}/run/yantra"
 install -dm770 "${AIROOTFS}/var/lib/yantra"
-install -dm770 "${AIROOTFS}/var/lib/yantra/chroma"
-log_ok "Runtime directories staged."
+install -dm770 "${AIROOTFS}/var/lib/yantra/chromadb"
+install -dm770 "${AIROOTFS}/var/log/yantra"
+install -dm770 "${AIROOTFS}/var/lib/yantra/cache"
+log_ok "Runtime directories staged (including /var/log/yantra and cache)."
 
 # ── 3.6b: yantra_user home directory ─────────────────────────────────────────
 # Required for `su - yantra_user` in the automated boot script.
@@ -358,13 +389,12 @@ log_info "Creating venv at ${VENV_BUILD}..."
 python3 -m venv "${VENV_BUILD}"
 log_ok "Venv created."
 
-# Install pip dependencies
-log_info "Installing pip dependencies into venv..."
+# Install pip dependencies from requirements.txt
+log_info "Installing pip dependencies from requirements.txt into venv..."
+install -Dm644 "${YANTRA_SRC}/requirements.txt" "${AIROOTFS}/opt/yantra/requirements.txt"
 "${VENV_BUILD}/bin/pip" install --upgrade pip setuptools wheel --quiet --retries 10 --timeout 120
-for pkg in "${PIP_REQUIREMENTS[@]}"; do
-    log_info "  Installing: ${pkg}"
-    "${VENV_BUILD}/bin/pip" install "${pkg}" --quiet --retries 10 --timeout 120
-done
+"${VENV_BUILD}/bin/pip" install -r "${YANTRA_SRC}/requirements.txt" --quiet --retries 10 --timeout 120
+"${VENV_BUILD}/bin/pip" install litellm chromadb textual docker --quiet --retries 10 --timeout 120
 log_ok "All pip dependencies installed."
 
 # ── CRITICAL FIX: Hashbang correction ────────────────────────────────────────
@@ -374,13 +404,12 @@ log_ok "All pip dependencies installed."
 log_info "Fixing hashbangs in venv/bin/ scripts..."
 HASHBANG_COUNT=0
 
-for script in "${VENV_BUILD}/bin/"*; do
-    [[ -f "$script" ]] || continue
+while IFS= read -r -d '' script; do
     if head -1 "$script" 2>/dev/null | grep -q "^#!"; then
         sed -i "1s|#!.*python[0-9.]*|#!${VENV_DEPLOY}/bin/python3|" "$script"
         HASHBANG_COUNT=$((HASHBANG_COUNT + 1))
     fi
-done
+done < <(find "${VENV_BUILD}/bin" -type f -executable -print0)
 
 log_ok "Fixed hashbangs in ${HASHBANG_COUNT} script(s)."
 
@@ -397,7 +426,7 @@ fi
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PHASE 3.8: Unified Boot Flow (TTY1 Collision Fix)
+# PHASE 3.8: Unified Boot Flow — Pure TUI Launch
 # Generates the ArchISO automated script to handle Wi-Fi prompt, start
 # yantra.service, and handoff to yantra_user running Cage on TTY1.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -421,22 +450,21 @@ if ! systemctl is-active --quiet NetworkManager; then
   systemctl start NetworkManager
 fi
 
-# 2) Prompt user to configure Wi‑Fi
-if ! ping -c1 -W2 yantraos.com >/dev/null 2>&1; then
-  echo "[YANTRA] Network not detected. Launching nmtui for Wi‑Fi setup..."
-  sleep 1
-  nmtui
-fi
-
-# Re-test connectivity
-if ping -c1 -W5 yantraos.com >/dev/null 2>&1; then
-  echo "[YANTRA] Network OK – contacting Yantra HUD health endpoint..."
-  curl -fsSL https://yantraos.com/api/health || echo "[WARN] HUD health check failed"
+# 2) Log network status — no external TUI hijack on TTY1
+if ! ping -c1 -W5 8.8.8.8 > /dev/null 2>&1; then
+  echo "[YANTRA] Network not detected. Yantra Shell will start in offline mode."
+  echo "[YANTRA] Configure Wi-Fi from within the TUI shell using nmcli."
 else
-  echo "[ERROR] Network still unavailable. Kriya Loop will run in offline mode."
+  echo "[YANTRA] Network OK — Kriya Loop will use cloud inference."
 fi
 
-# 3) Enable and start Kriya Loop
+# 3) Wake up Docker Sandbox environment
+if ! systemctl is-active --quiet docker; then
+  echo "[YANTRA] Waking up Docker Sandbox environment..."
+  systemctl start docker
+fi
+
+# 4) Enable and start Kriya Loop
 if ! systemctl is-enabled --quiet yantra.service; then
   echo "[YANTRA] Enabling yantra.service..."
   systemctl enable yantra.service
@@ -448,14 +476,21 @@ systemctl start yantra.service
 sleep 2
 systemctl --no-pager --full status yantra.service || true
 
-# 4) Hand over to TUI shell on TTY1 (Kiosk Mode)
-echo "[YANTRA] Preparing Wayland session for yantra_user..."
-mkdir -p /run/user/1000
-chown 1000:1000 /run/user/1000
-chmod 700 /run/user/1000
+# 4) Hand over to Pure TUI on TTY1
+#    No Wayland, no cage, no compositor.
+#    Direct framebuffer TUI via Textual/Rich.
+echo "[YANTRA] Launching Pure TUI for yantra_user on TTY1..."
+mkdir -p /home/yantra_user
+chown 1000:1000 /home/yantra_user
 
-echo "[YANTRA] Handing off to yantra_user Kiosk Shell on TTY1..."
-su - yantra_user -c "XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM=wayland cage -s -- alacritty -e /opt/yantra/venv/bin/python3 /opt/yantra/core/tui_shell.py"
+if [[ -z "${DISPLAY:-}" && $(tty) == /dev/tty1 ]]; then
+    chown -R yantra_user:yantra_user /home/yantra_user
+    chmod 700 /home/yantra_user
+    chmod 666 /dev/tty1
+    chmod 777 /run/yantra
+    chmod 666 /run/yantra/ipc.sock || true
+    exec su - yantra_user -c "cd /opt/yantra && TERM=linux COLORTERM=truecolor /opt/yantra/venv/bin/python3 -m core.tui_shell < /dev/tty1 > /dev/tty1 2>&1"
+fi
 
 # Disable self on next boot (live session only)
 rm -f /root/.automated_script.sh
@@ -491,7 +526,7 @@ fi
 #   /opt/yantra/venv     → 0:0:0755 (venv root)
 #   /run/yantra          → 999:999:0770 (yantra_daemon:yantra — UDS socket)
 #   /var/lib/yantra      → 999:999:0770 (yantra_daemon:yantra — ChromaDB)
-#   /var/lib/yantra/chroma → 999:999:0770 (same)
+#   /var/lib/yantra/chromadb → 999:999:0770 (same)
 #   yantra.service       → 0:0:0644 (standard systemd unit)
 #   polkit rules         → 0:0:0644 (readable by polkitd)
 #   pacman hooks         → 0:0:0644 (standard config file)
@@ -527,6 +562,11 @@ file_permissions=(
     ["/opt/yantra/core/ipc_server.py"]="0:0:0644"
     ["/opt/yantra/core/hybrid_router.py"]="0:0:0644"
     ["/opt/yantra/core/vector_memory.py"]="0:0:0644"
+    ["/opt/yantra/core/tui_shell.py"]="0:0:0644"
+    ["/opt/yantra/core/config.py"]="0:0:0644"
+    ["/opt/yantra/core/cloud.py"]="0:0:0644"
+    ["/opt/yantra/core/hardware.py"]="0:0:0644"
+    ["/opt/yantra/core/prompt.py"]="0:0:0644"
 
     # ── Virtual environment ──────────────────────────────────────────────
     ["/opt/yantra/venv"]="0:0:0755"
@@ -535,7 +575,9 @@ file_permissions=(
     # UID 999 = yantra_daemon, GID 999 = yantra
     ["/run/yantra"]="999:999:0770"
     ["/var/lib/yantra"]="999:999:0770"
-    ["/var/lib/yantra/chroma"]="999:999:0770"
+    ["/var/lib/yantra/chromadb"]="999:999:0770"
+    ["/var/lib/yantra/cache"]="999:999:0770"
+    ["/var/log/yantra"]="999:999:0770"
 
     # ── Systemd, Polkit, Pacman hooks ────────────────────────────────────
     ["/etc/systemd/system/yantra.service"]="0:0:0644"
@@ -652,6 +694,14 @@ fi
 mkdir -p "${WORK_DIR}"
 mkdir -p "${OUTPUT_DIR}"
 
+# ── Bootloader Persistence Lock ───────────────────────────────────────────────
+# Enforce cow_label=yantra_cow and cow_spacesize=8G in all bootloader configs
+# before mkarchiso packs them. This mathematically guarantees the ISO boots
+# with persistence enabled.
+log_info "Injecting persistent storage parameters into bootloaders..."
+find "${ARCHLIVE_DIR}/syslinux" "${ARCHLIVE_DIR}/efiboot" "${ARCHLIVE_DIR}/grub" -type f -exec sed -i 's/\(archisolabel=[^ ]*\)/\1 cow_label=yantra_cow cow_spacesize=8G/g' {} + 2>/dev/null || true
+find "${ARCHLIVE_DIR}/syslinux" "${ARCHLIVE_DIR}/efiboot" "${ARCHLIVE_DIR}/grub" -type f -exec sed -i 's/\(archisosearchuuid=[^ ]*\)/\1 cow_label=yantra_cow cow_spacesize=8G/g' {} + 2>/dev/null || true
+log_ok "Bootloader persistent anchors injected."
 # ── Execute mkarchiso ─────────────────────────────────────────────────────────
 # -v: verbose output for debugging
 # -w: work directory for intermediate build artifacts

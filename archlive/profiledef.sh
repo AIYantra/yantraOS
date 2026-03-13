@@ -68,7 +68,7 @@ file_permissions=(
     # UID 999 = yantra_daemon, GID 999 = yantra
     ["/run/yantra"]="999:999:0770"
     ["/var/lib/yantra"]="999:999:0770"
-    ["/var/lib/yantra/chroma"]="999:999:0770"
+    ["/var/lib/yantra/chromadb"]="999:999:0770"
 
     # ── Systemd, Polkit, Pacman hooks ────────────────────────────────────
     ["/etc/systemd/system/yantra.service"]="0:0:0644"
