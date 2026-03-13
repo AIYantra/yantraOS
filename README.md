@@ -21,7 +21,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Arch%20Linux%20%7C%20Bare%20Metal-1793D1?style=for-the-badge&logo=archlinux&logoColor=white)](https://archlinux.org)
 [![Engine](https://img.shields.io/badge/Engine-Python%203.12%20%7C%20Asyncio-FFD700?style=for-the-badge&logo=python&logoColor=000000)](https://python.org)
 [![UI](https://img.shields.io/badge/Interface-Pure%20TUI%20%7C%20Textual-0057FF?style=for-the-badge&logo=gnometerminal&logoColor=white)]()
-[![Status](https://img.shields.io/badge/Status-RC4%20Golden%20Master%20%7C%20Bare--Metal-00FF41?style=for-the-badge)]()
+[![Status](https://img.shields.io/badge/Status-RC5%20Golden%20Master%20%7C%20Bare--Metal-00FF41?style=for-the-badge)]()
 [![IPC](https://img.shields.io/badge/IPC-UNIX%20Domain%20Socket-00FF41?style=for-the-badge&logo=linux&logoColor=000000)]()
 
 <br/>
@@ -407,10 +407,10 @@ python3 -m core.tui_shell
 
 ---
 
-## `12` · CURRENT STATE · MILESTONE 6 — RC4 GOLDEN MASTER ★
+## `12` · CURRENT STATE · MILESTONE 6 — RC5 GOLDEN MASTER ★
 
 ```
-  MILESTONE TRACKER                              ▸ RC4 · BARE-METAL CONFIRMED ✓
+  MILESTONE TRACKER                              ▸ RC5 · BARE-METAL CONFIRMED ✓
   ════════════════════════════════════════════════════════════════════════════════
 
   [✓] Core Daemon orchestration loop (Kriya ∞)
@@ -436,16 +436,16 @@ python3 -m core.tui_shell
       execution; watchdog keepalive maintained during pause (no systemd kill)
   [✓] inject_thought — natural language injected into engine context_queue,
       consumed by REASON phase on the very next iteration tick
-  [✓] RC4 BARE-METAL TEST PASSED:
+  [✓] RC5 BARE-METAL TEST PASSED:
         ▸ pause_loop confirmed — iterations halted on physical hardware
         ▸ inject_thought "My laptop fan is loud, please check CPU" — confirmed
           picked up by engine on next iteration, visible in ThoughtStream
         ▸ resume_loop confirmed — autonomous loop restored
 
   ── IN PROGRESS ───────────────────────────────────────────────────────────────
-  [~] Docker sandbox execution pathway
+  [✓] Docker sandbox execution pathway & TUI ThoughtStream logging
   [~] Restricted SSH whitelisted command gateway
-  [~] Btrfs Snapper auto-snapshot integration
+  [✓] Btrfs Snapper auto-snapshot integration
 
   ── ROADMAP ───────────────────────────────────────────────────────────────────
   [ ] NVIDIA driver injection on live ISO
