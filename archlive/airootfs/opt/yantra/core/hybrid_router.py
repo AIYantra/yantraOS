@@ -170,7 +170,7 @@ def _build_router() -> Any:
         {
             "model_name": "anthropic/haiku",
             "litellm_params": {
-                "model": "claude-3-5-haiku-20241022",
+                "model": "anthropic/claude-3-5-haiku-20241022",
                 "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
                 "timeout": INFERENCE_TIMEOUT_SECS,
                 "stream": True,
@@ -180,7 +180,7 @@ def _build_router() -> Any:
         {
             "model_name": "openai/gpt4o",
             "litellm_params": {
-                "model": "gpt-4o",
+                "model": "openai/gpt-4o",
                 "api_key": os.environ.get("OPENAI_API_KEY", ""),
                 "timeout": INFERENCE_TIMEOUT_SECS,
                 "stream": True,

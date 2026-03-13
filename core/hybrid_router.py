@@ -27,75 +27,22 @@ import asyncio
 import logging
 import os
 import time
-from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 log = logging.getLogger("yantra.hybrid_router")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-
-SECRETS_ENV_PATH: str = "/etc/yantra/host_secrets.env"
 
 # Global inference timeout. External cloud APIs (Anthropic, OpenAI, Google)
 # can stall for 30–60 s under load. Capping at 45 s ensures the Kriya Loop
 # never blocks longer than one iteration interval (10 s) × 4.5.
 INFERENCE_TIMEOUT_SECS: float = 45.0
 
-# ── Secrets Loader ────────────────────────────────────────────────────────────
-
-
-def _load_secrets(path: str = SECRETS_ENV_PATH) -> None:
-    """
-    Parse a restricted host_secrets.env file and inject values into os.environ.
-
-    File format: standard KEY=VALUE lines (no export keyword, no quotes required).
-    Empty lines and lines starting with # are ignored.
-
-    The file must be owned by root and mode 0600. Any other permission
-    configuration is a security violation and will raise RuntimeError.
-
-    Example /etc/yantra/host_secrets.env:
-        LITELLM_API_KEY="sk-..."
-        ANTHROPIC_API_KEY=sk-ant-...
-        OPENAI_API_KEY=sk-...
-        OLLAMA_BASE_URL=http://localhost:11434
-    """
-    secrets_path = Path(path)
-
-    if not secrets_path.exists():
-        log.warning(
-            f"> ROUTER: Secrets file not found at {path}. "
-            "Cloud fallbacks will fail. Ensure /etc/yantra/host_secrets.env is deployed."
-        )
-        return
-
-    # Enforce strict permissions: root:root 0600
-    file_stat = secrets_path.stat()
-    if file_stat.st_uid != 0:
-        raise RuntimeError(
-            f"SECURITY VIOLATION: {path} is not owned by root (uid={file_stat.st_uid}). "
-            "Daemon will not load secrets from an untrusted file."
-        )
-    if file_stat.st_mode & 0o177:  # Any bits beyond owner rw (0o600) are set
-        raise RuntimeError(
-            f"SECURITY VIOLATION: {path} has insecure permissions "
-            f"({oct(file_stat.st_mode & 0o777)}). Expected 0o600."
-        )
-
-    loaded: list[str] = []
-    with secrets_path.open("r", encoding="utf-8") as fh:
-        for raw_line in fh:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip()
-            if key:
-                os.environ[key] = value
-                loaded.append(key)
-
-    log.info(f"> ROUTER: Loaded {len(loaded)} secret(s) from {path}: {loaded}")
+# Secrets are injected into os.environ by systemd's EnvironmentFile directive
+# (EnvironmentFile=-/etc/yantra/host_secrets.env) in yantra.service.
+# No disk reads for secrets occur at runtime — all API keys resolve from RAM
+# via os.environ.get(). This eliminates permission boundary collisions under
+# ProtectSystem=strict.
 
 
 # ── Router Factory ────────────────────────────────────────────────────────────
@@ -160,7 +107,7 @@ def _build_router() -> Any:
         {
             "model_name": "gemini/flash",
             "litellm_params": {
-                "model": "gemini/gemini-2.0-flash",
+                "model": "gemini/gemini-2.5-flash",
                 "api_key": os.environ.get("GEMINI_API_KEY", ""),
                 "timeout": INFERENCE_TIMEOUT_SECS,
                 "stream": True,
@@ -170,7 +117,7 @@ def _build_router() -> Any:
         {
             "model_name": "anthropic/haiku",
             "litellm_params": {
-                "model": "claude-3-5-haiku-20241022",
+                "model": "anthropic/claude-3-5-haiku-20241022",
                 "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
                 "timeout": INFERENCE_TIMEOUT_SECS,
                 "stream": True,
@@ -180,7 +127,7 @@ def _build_router() -> Any:
         {
             "model_name": "openai/gpt4o",
             "litellm_params": {
-                "model": "gpt-4o",
+                "model": "openai/gpt-4o",
                 "api_key": os.environ.get("OPENAI_API_KEY", ""),
                 "timeout": INFERENCE_TIMEOUT_SECS,
                 "stream": True,
@@ -217,11 +164,11 @@ def _build_router() -> Any:
 def get_router() -> Any:
     """
     Lazy singleton accessor for the LiteLLM Router.
-    Loads secrets on first call. Thread-safe for asyncio (single event loop).
+    API keys are already in os.environ (injected by systemd EnvironmentFile).
+    Thread-safe for asyncio (single event loop).
     """
     global _router_instance
     if _router_instance is None:
-        _load_secrets()
         _router_instance = _build_router()
     return _router_instance
 
@@ -300,7 +247,7 @@ async def stream_complete(
     *,
     model: str = "local/llama3",
     timeout: float = INFERENCE_TIMEOUT_SECS,
-) -> AsyncIterator[str]:  # type: ignore[return]
+) -> AsyncIterator[str]:
     """
     Convenience wrapper that yields token strings from a streaming completion.
 
