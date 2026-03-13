@@ -8,7 +8,7 @@ acquisition system (YANTRA_MASTER_CONTEXT §4.9). Each successful execution
 path is embedded and stored so the daemon can retrieve verified solutions
 before generating new code.
 
-Storage backend: ChromaDB PersistentClient at /var/lib/yantra/chroma
+Storage backend: ChromaDB PersistentClient at /var/lib/yantra/chromadb
   - Ownership: yantra_daemon:yantra (set by systemd-tmpfiles in Milestone 1)
   - BTRFS +C (nodatacow) attribute applied to the directory — no chown
     or chattr operations are required or performed in this module.
@@ -44,7 +44,7 @@ log = logging.getLogger("yantra.vector_memory")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-CHROMA_PATH: str = "/var/lib/yantra/chroma"
+CHROMA_PATH: str = "/var/lib/yantra/chromadb"
 
 # Collection names — changing these after first boot requires a migration.
 COLLECTION_EXECUTION_LOGS: str = "execution_logs"
@@ -176,7 +176,7 @@ class VectorMemory:
                 "chromadb is not installed. Run: pip install chromadb"
             ) from exc
 
-        # PersistentClient writes to /var/lib/yantra/chroma.
+        # PersistentClient writes to /var/lib/yantra/chromadb.
         # Directory ownership (yantra_daemon:yantra) was set by systemd-tmpfiles.
         # The +C (nodatacow) attribute was applied in Milestone 1 — no chattr here.
         self._client = chromadb.PersistentClient(path=self._path)
