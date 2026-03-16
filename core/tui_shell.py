@@ -1,6 +1,6 @@
 """
 YantraOS — Mission Control TUI Shell  (core/tui_shell.py)
-v1.3: "Connected Overseer" — Wi-Fi Manager Edition (RC8)
+v1.3: "Connected Overseer" — Wi-Fi Manager Edition
 
 Three Pillars
   1. Interface Split  — ThoughtStream (machine) | ChatPane (human)
@@ -98,7 +98,7 @@ BOOT_BANNER = f"""\
 [{CYBER_CYAN} bold]║[/]  [{HEADER_GLOW} bold]  ╚██╔╝  ██╔══██║██║╚██╗██║   ██║   ██╔══██╗██╔══██║[/] [{CYBER_CYAN} bold]║[/]
 [{CYBER_CYAN} bold]║[/]  [{HEADER_GLOW} bold]   ██║   ██║  ██║██║ ╚████║   ██║   ██║  ██║██║  ██║[/] [{CYBER_CYAN} bold]║[/]
 [{CYBER_CYAN} bold]║[/]  [{HEADER_GLOW} bold]   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝[/] [{CYBER_CYAN} bold]║[/]
-[{CYBER_CYAN} bold]║[/]  [{TEXT_MID}]     Autonomous OS  //  Kriya Loop Engine  v1.3 RC8  [/] [{CYBER_CYAN} bold]║[/]
+[{CYBER_CYAN} bold]║[/]  [{TEXT_MID}]     Autonomous OS  //  Kriya Loop Engine  v1.2     [/] [{CYBER_CYAN} bold]║[/]
 [{CYBER_CYAN} bold]╚══════════════════════════════════════════════════════════╝[/]
 [{TEXT_DIM}]  Connecting to daemon at {UDS_PATH} …[/]\
 """

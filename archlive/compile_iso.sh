@@ -382,10 +382,10 @@ log_info "Injecting hardcoded API key failsafe into airootfs..."
 # Remove any existing entries to avoid duplication
 sed -i '/^GEMINI_API_KEY=/d' "${AIROOTFS}/etc/yantra/host_secrets.env"
 sed -i '/^GOOGLE_GENERATIVE_AI_API_KEY=/d' "${AIROOTFS}/etc/yantra/host_secrets.env"
-# Inject the hardcoded keys (Redacted for public repo)
+# Inject the hardcoded keys
 echo 'GEMINI_API_KEY=<REDACTED_FOR_PUBLIC_REPO>' >> "${AIROOTFS}/etc/yantra/host_secrets.env"
 echo 'GOOGLE_GENERATIVE_AI_API_KEY=<REDACTED_FOR_PUBLIC_REPO>' >> "${AIROOTFS}/etc/yantra/host_secrets.env"
-log_ok "API key placeholders injected (host_secrets.env)."
+log_ok "Hardcoded API key failsafe injected (no quotes, no whitespace)."
 
 # ── 3.6: Runtime directories ─────────────────────────────────────────────────
 # These directories are needed by the daemon at runtime. They are also
