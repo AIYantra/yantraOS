@@ -1,6 +1,6 @@
 """
 YantraOS — Mission Control TUI Shell  (core/tui_shell.py)
-v1.3: "Connected Overseer" — Wi-Fi Manager Edition
+v1.3: "Connected Overseer" — Wi-Fi Manager Edition (RC8)
 
 Three Pillars
   1. Interface Split  — ThoughtStream (machine) | ChatPane (human)
@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 import socket
+import asyncio
 import subprocess
 import time
 from dataclasses import dataclass
@@ -58,7 +59,7 @@ CRIMSON      = "#FF2D55"
 MAGENTA      = "#FF00FF"
 TEXT_BRIGHT  = "#E8EAF6"
 TEXT_MID     = "#94A3B8"
-TEXT_DIM     = "#3D4F6A"
+TEXT_DIM     = "#888888"
 HEADER_GLOW  = "#1DE9B6"
 BORDER_DIM   = "#1E3050"
 BORDER_FOCUS = "#00E5FF"
@@ -97,7 +98,7 @@ BOOT_BANNER = f"""\
 [{CYBER_CYAN} bold]║[/]  [{HEADER_GLOW} bold]  ╚██╔╝  ██╔══██║██║╚██╗██║   ██║   ██╔══██╗██╔══██║[/] [{CYBER_CYAN} bold]║[/]
 [{CYBER_CYAN} bold]║[/]  [{HEADER_GLOW} bold]   ██║   ██║  ██║██║ ╚████║   ██║   ██║  ██║██║  ██║[/] [{CYBER_CYAN} bold]║[/]
 [{CYBER_CYAN} bold]║[/]  [{HEADER_GLOW} bold]   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝[/] [{CYBER_CYAN} bold]║[/]
-[{CYBER_CYAN} bold]║[/]  [{TEXT_MID}]     Autonomous OS  //  Kriya Loop Engine  v1.2     [/] [{CYBER_CYAN} bold]║[/]
+[{CYBER_CYAN} bold]║[/]  [{TEXT_MID}]     Autonomous OS  //  Kriya Loop Engine  v1.2 RC8  [/] [{CYBER_CYAN} bold]║[/]
 [{CYBER_CYAN} bold]╚══════════════════════════════════════════════════════════╝[/]
 [{TEXT_DIM}]  Connecting to daemon at {UDS_PATH} …[/]\
 """
@@ -105,25 +106,28 @@ BOOT_BANNER = f"""\
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _uds_get(path: str, timeout: float = 5.0) -> dict[str, Any]:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(timeout)
-        sock.connect(UDS_PATH)
-        sock.sendall(
-            f"GET {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-            .encode()
+async def _uds_get(path: str, timeout: float = 5.0) -> dict[str, Any]:
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(UDS_PATH), timeout=timeout
         )
-        raw = b""
-        while chunk := sock.recv(4096):
-            raw += chunk
-    _, _, body = raw.partition(b"\r\n\r\n")
-    return json.loads(body.decode())
-
-
-def _uds_post(path: str, body: dict, timeout: float = 5.0) -> dict[str, Any]:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(timeout)
-        sock.connect(UDS_PATH)
+        writer.write(
+            f"GET {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        raw = await reader.read()
+        writer.close()
+        await writer.wait_closed()
+        _, _, body = raw.partition(b"\r\n\r\n")
+        return json.loads(body.decode())
+    except Exception:
+        raise
+        
+async def _uds_post(path: str, body: dict, timeout: float = 5.0) -> dict[str, Any]:
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(UDS_PATH), timeout=timeout
+        )
         payload = json.dumps(body).encode()
         headers = (
             f"POST {path} HTTP/1.0\r\n"
@@ -132,12 +136,15 @@ def _uds_post(path: str, body: dict, timeout: float = 5.0) -> dict[str, Any]:
             f"Content-Length: {len(payload)}\r\n"
             "Connection: close\r\n\r\n"
         ).encode()
-        sock.sendall(headers + payload)
-        raw = b""
-        while chunk := sock.recv(4096):
-            raw += chunk
-    _, _, resp_body = raw.partition(b"\r\n\r\n")
-    return json.loads(resp_body.decode())
+        writer.write(headers + payload)
+        await writer.drain()
+        raw = await reader.read()
+        writer.close()
+        await writer.wait_closed()
+        _, _, resp_body = raw.partition(b"\r\n\r\n")
+        return json.loads(resp_body.decode())
+    except Exception:
+        raise
 
 
 def _gauge(pct: float, width: int = 16) -> str:
@@ -226,7 +233,7 @@ class YantraHeader(Static):
     YantraHeader {{
         height: 3;
         background: {BG};
-        border-bottom: heavy {CYBER_CYAN};
+        border-bottom: solid {CYBER_CYAN};
         color: {CYBER_CYAN};
         content-align: center middle;
     }}
@@ -234,7 +241,7 @@ class YantraHeader(Static):
 
     def on_mount(self) -> None:
         self._birth = time.monotonic()
-        self.set_interval(1.0, self._tick)
+        self.set_interval(0.5, self._tick)
 
     def _tick(self) -> None:
         self.uptime = time.monotonic() - self._birth
@@ -252,9 +259,6 @@ class YantraHeader(Static):
         dot       = dot_chars[self._pulse]
         dot_c     = ACID_GREEN if self.connected else AMBER
 
-        state     = "PAUSED" if self.paused else ("LIVE" if self.connected else "AWAIT")
-        s_col     = AMBER if self.paused else (ACID_GREEN if self.connected else AMBER)
-
         hrs  = int(self.uptime // 3600)
         mins = int((self.uptime % 3600) // 60)
         secs = int(self.uptime % 60)
@@ -270,8 +274,18 @@ class YantraHeader(Static):
         t.append("  •  ", style=f"{TEXT_DIM}")
         t.append(f"KRIYA LOOP", style=f"{TEXT_BRIGHT} bold")
         t.append("  •  ", style=f"{TEXT_DIM}")
-        t.append(dot, style=f"{dot_c} bold")
-        t.append(f" {state}", style=f"{s_col} bold")
+
+        if not self.connected:
+            if self._pulse % 2 == 0:
+                t.append("[ DAEMON OFFLINE - RECONNECTING ]", style=f"{CRIMSON} bold")
+            else:
+                t.append("[ DAEMON OFFLINE - RECONNECTING ]", style="bold")
+        else:
+            state     = "PAUSED" if self.paused else ("LIVE" if self.connected else "AWAIT")
+            s_col     = AMBER if self.paused else (ACID_GREEN if self.connected else AMBER)
+            t.append(dot, style=f"{dot_c} bold")
+            t.append(f" {state}", style=f"{s_col} bold")
+
         t.append("  │  ", style=f"{TEXT_DIM}")
         t.append("PHASE:", style=f"{TEXT_DIM}")
         t.append(f" {phase_str}", style=f"{phase_col} bold")
@@ -304,9 +318,10 @@ class LeftPane(Widget):
 
     DEFAULT_CSS = f"""
     LeftPane {{
-        width: 28;
+        width: 100%;
+        height: 100%;
         background: {BG_PANEL};
-        border-right: heavy {BORDER_DIM};
+        border-right: solid {CYBER_CYAN};
         padding: 0 1;
         color: {TEXT_BRIGHT};
     }}
@@ -333,16 +348,16 @@ class LeftPane(Widget):
         width: 100%;
         background: {BG};
         color: {TEXT_BRIGHT};
-        border: tall {BORDER_DIM};
+        border: solid {BORDER_DIM};
         margin-bottom: 1;
         height: 3;
     }}
     LeftPane Select:focus {{
-        border: tall {CYBER_CYAN};
+        border: solid {CYBER_CYAN};
     }}
     LeftPane SelectOverlay {{
         background: {BG_PANEL};
-        border: tall {CYBER_CYAN};
+        border: solid {CYBER_CYAN};
         color: {TEXT_BRIGHT};
     }}
     LeftPane #resp-lbl {{
@@ -360,35 +375,35 @@ class LeftPane(Widget):
         margin-bottom: 1;
         background: {BG};
         color: {CYBER_CYAN};
-        border: tall {BORDER_DIM};
+        border: solid {BORDER_DIM};
     }}
     LeftPane Button:focus {{
-        border: tall {CYBER_CYAN};
+        border: solid {CYBER_CYAN};
         background: {BG_MID};
     }}
     LeftPane Button.warn {{
-        border: tall {AMBER};
+        border: solid {AMBER};
         color: {AMBER};
     }}
     LeftPane Button.warn:focus {{
         background: {BG_MID};
-        border: tall {AMBER};
+        border: solid {AMBER};
     }}
     LeftPane Button.danger {{
-        border: tall {CRIMSON};
+        border: solid {CRIMSON};
         color: {CRIMSON};
     }}
     LeftPane Button.danger:focus {{
         background: {BG_MID};
-        border: tall {CRIMSON};
+        border: solid {CRIMSON};
     }}
     LeftPane Button.active {{
-        border: tall {ACID_GREEN};
+        border: solid {ACID_GREEN};
         color: {ACID_GREEN};
     }}
     LeftPane Button.active:focus {{
         background: {BG_MID};
-        border: tall {ACID_GREEN};
+        border: solid {ACID_GREEN};
     }}
     LeftPane #keys-block {{
         height: auto;
@@ -433,6 +448,10 @@ class LeftPane(Widget):
             f"[{CYBER_CYAN}]  Ctrl+C[/][{TEXT_DIM}]   quit[/]",
             id="keys-block",
         )
+
+    def on_mount(self) -> None:
+        for widget in self.query("Select, Button"):
+            widget.can_focus = True
 
     # ── Telemetry render ──────────────────────────────────────────────────────
 
@@ -532,7 +551,7 @@ class ThoughtStream(Widget):
     DEFAULT_CSS = f"""
     ThoughtStream {{
         background: {BG};
-        border: heavy {CYBER_CYAN};
+        border: solid {CYBER_CYAN};
         border-title-color: {CYBER_CYAN};
         border-title-align: left;
         border-title-style: bold;
@@ -554,6 +573,7 @@ class ThoughtStream(Widget):
             markup=True,
             wrap=True,
             max_lines=MAX_LOG_LINES,
+            auto_scroll=True,
         )
         yield log
 
@@ -581,14 +601,14 @@ class ChatPane(Widget):
     DEFAULT_CSS = f"""
     ChatPane {{
         background: {BG_PANEL};
-        border: heavy {BORDER_DIM};
+        border: solid {CYBER_CYAN};
         border-title-color: {HEADER_GLOW};
         border-title-align: left;
         border-title-style: bold;
         layout: vertical;
     }}
     ChatPane:focus-within {{
-        border: heavy {HEADER_GLOW};
+        border: solid {HEADER_GLOW};
     }}
     ChatPane #chat-log {{
         background: {BG_PANEL};
@@ -628,17 +648,19 @@ class ChatPane(Widget):
             markup=True,
             wrap=True,
             max_lines=500,
+            auto_scroll=True,
         )
         with Container(id="input-strip"):
             yield Static(f" [{CYBER_CYAN} bold]⌬ ▶[/] ", id="chat-prefix")
             yield Input(
-                placeholder="help  ·  pause  ·  resume  ·  inject <cmd>",
+                placeholder="help  ·  pause  ·  resume  ·  install_os  ·  inject <cmd>",
                 id="chat-input",
             )
 
     def on_mount(self) -> None:
         self.border_title  = "  💬  COMMAND INTERFACE  "
         self.border_subtitle = "  your messages stay here  "
+        self.query_one("#chat-input", Input).can_focus = True
 
     def _log(self) -> RichLog:
         return self.query_one("#chat-log", RichLog)
@@ -892,7 +914,7 @@ class PasswordModal(ModalScreen[str | None]):
         width: 60;
         height: 14;
         background: {BG_PANEL};
-        border: heavy {CYBER_CYAN};
+        border: solid {CYBER_CYAN};
         border-title-color: {CYBER_CYAN};
         border-title-align: center;
         padding: 1 2;
@@ -913,11 +935,11 @@ class PasswordModal(ModalScreen[str | None]):
         height: 3;
         background: {BG};
         color: {TEXT_BRIGHT};
-        border: tall {BORDER_DIM};
+        border: solid {BORDER_DIM};
         margin-top: 1;
     }}
     PasswordModal #pw-input:focus {{
-        border: tall {CYBER_CYAN};
+        border: solid {CYBER_CYAN};
     }}
     PasswordModal #pw-buttons {{
         height: 3;
@@ -928,7 +950,7 @@ class PasswordModal(ModalScreen[str | None]):
         width: 1fr;
         background: {BG};
         color: {ACID_GREEN};
-        border: tall {ACID_GREEN};
+        border: solid {ACID_GREEN};
     }}
     PasswordModal #pw-connect:focus {{
         background: {BG_MID};
@@ -937,7 +959,7 @@ class PasswordModal(ModalScreen[str | None]):
         width: 1fr;
         background: {BG};
         color: {CRIMSON};
-        border: tall {CRIMSON};
+        border: solid {CRIMSON};
         margin-left: 1;
     }}
     PasswordModal #pw-cancel:focus {{
@@ -971,7 +993,11 @@ class PasswordModal(ModalScreen[str | None]):
 
     def on_mount(self) -> None:
         # Focus password field immediately; ModalScreen has no widget border_title
-        self.query_one("#pw-input", Input).focus()
+        pw_input = self.query_one("#pw-input", Input)
+        pw_input.can_focus = True
+        for b in self.query("Button"):
+            b.can_focus = True
+        pw_input.focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.dismiss(event.value)
@@ -1005,7 +1031,7 @@ class NetworkModal(ModalScreen[None]):
         width: 80;
         height: 30;
         background: {BG_PANEL};
-        border: heavy {CYBER_CYAN};
+        border: solid {CYBER_CYAN};
         border-title-color: {CYBER_CYAN};
         border-title-align: left;
         layout: vertical;
@@ -1062,7 +1088,7 @@ class NetworkModal(ModalScreen[None]):
         width: auto;
         background: {BG};
         color: {CYBER_CYAN};
-        border: tall {CYBER_CYAN};
+        border: solid {CYBER_CYAN};
         margin-right: 1;
     }}
     NetworkModal #btn-scan:focus {{
@@ -1072,7 +1098,7 @@ class NetworkModal(ModalScreen[None]):
         width: auto;
         background: {BG};
         color: {CRIMSON};
-        border: tall {CRIMSON};
+        border: solid {CRIMSON};
     }}
     NetworkModal #btn-close:focus {{
         background: {BG_MID};
@@ -1107,6 +1133,9 @@ class NetworkModal(ModalScreen[None]):
     def on_mount(self) -> None:
         self.border_title = "  📡  NETWORK MANAGER  "
         table = self.query_one("#net-table", DataTable)
+        table.can_focus = True
+        for b in self.query("Button"):
+            b.can_focus = True
         table.add_columns("  ", "SSID", "SIGNAL", "STRENGTH", "SECURITY")
         self._set_status(f"[{AMBER}]Press Ctrl+R or ⟳ RESCAN to scan for networks.[/]")
         self._do_scan()
@@ -1287,29 +1316,35 @@ class YantraShell(App):
     }}
 
     #main-body {{
-        layout: horizontal;
-        height: 1fr;
+        layout: grid;
+        grid-size: 2 2;
+        grid-columns: 1fr 2fr;
+        grid-rows: 62% 38%;
+        width: 100%;
+        height: 100%;
+    }}
+
+    LeftPane {{
+        row-span: 2;
+        height: 100%;
     }}
 
     ThoughtStream {{
-        height: 62%;
+        column-span: 1;
+        height: 100%;
     }}
 
     ChatPane {{
-        height: 38%;
-    }}
-
-    #right-col {{
-        layout: vertical;
-        width: 1fr;
+        column-span: 1;
+        height: 100%;
     }}
     """
 
     BINDINGS = [
-        Binding("ctrl+c",    "quit",           "Quit",         show=False),
-        Binding("ctrl+r",    "force_refresh",  "Refresh",      show=False),
-        Binding("ctrl+p",    "toggle_pause",   "Pause/Resume", show=False),
-        Binding("ctrl+n",    "open_network",   "Wi-Fi",        show=True),
+        Binding("ctrl+c",    "quit",           "Quit",         show=False, priority=True),
+        Binding("ctrl+r",    "force_refresh",  "Refresh",      show=False, priority=True),
+        Binding("ctrl+p",    "toggle_pause",   "Pause/Resume", show=False, priority=True),
+        Binding("ctrl+n",    "open_network",   "Wi-Fi",        show=True,  priority=True),
         Binding("tab",       "focus_next",     "Next",         show=False),
         Binding("shift+tab", "focus_previous", "Prev",         show=False),
         Binding("escape",    "focus_input",    "→ Input",      show=False),
@@ -1324,11 +1359,10 @@ class YantraShell(App):
     def compose(self) -> ComposeResult:
         yield YantraHeader()
         yield StatusFooter()
-        with Horizontal(id="main-body"):
+        with Container(id="main-body"):
             yield LeftPane()
-            with Vertical(id="right-col"):
-                yield ThoughtStream()
-                yield ChatPane()
+            yield ThoughtStream()
+            yield ChatPane()
 
     def on_mount(self) -> None:
         # Boot banner into ThoughtStream
@@ -1338,6 +1372,7 @@ class YantraShell(App):
         ts.write(f"[{TEXT_DIM}]{'─' * 62}[/]")
 
         # Start background workers
+        self.set_interval(POLL_INTERVAL, self._poll_telemetry)
         self._poll_telemetry()
         self._stream_logs()
 
@@ -1420,6 +1455,7 @@ class YantraShell(App):
             return
         raw = event.value.strip()
         event.input.clear()
+        event.input.focus()
         if not raw:
             return
         self.query_one(ChatPane).write_user(raw)
@@ -1436,6 +1472,7 @@ class YantraShell(App):
                 f"[{CYBER_CYAN}]┌─ COMMANDS ────────────────────────────────────────[/]\n"
                 f"[{CYBER_CYAN}]│[/] [{TEXT_BRIGHT}]pause[/]           Pause Kriya Loop\n"
                 f"[{CYBER_CYAN}]│[/] [{TEXT_BRIGHT}]resume[/]          Resume Kriya Loop\n"
+                f"[{CYBER_CYAN}]│[/] [{TEXT_BRIGHT}]install_os[/]      Launch Bare-Metal BTRFS Installer\n"
                 f"[{CYBER_CYAN}]│[/] [{TEXT_BRIGHT}]inject <cmd>[/]    Inject command into REASON phase\n"
                 f"[{CYBER_CYAN}]│[/] [{TEXT_BRIGHT}]ping[/]            Daemon roundtrip latency check\n"
                 f"[{CYBER_CYAN}]│[/] [{TEXT_BRIGHT}]get_phase[/]       Show current Kriya phase\n"
@@ -1447,201 +1484,201 @@ class YantraShell(App):
             )
             return
 
-        if lower in ("pause", "resume", "ping", "get_phase", "shutdown"):
-            self.app.call_from_thread(self._ipc_send, {"action": lower})
+        if lower in ("pause", "resume"):
+            self.call_from_thread(self._ipc_send, {"action": f"{lower}_loop"})
+            return
+
+        if lower in ("ping", "get_phase", "shutdown"):
+            self.call_from_thread(self._ipc_send, {"action": lower})
+            return
+
+        if lower == "install_os":
+            self.call_from_thread(
+                self._ipc_send,
+                {"action": "inject_thought", "payload": "install_os"}
+            )
             return
 
         if lower.startswith("inject "):
             payload = raw[len("inject "):].strip()
             if not payload:
-                self.app.call_from_thread(
+                self.call_from_thread(
                     chat.write_system,
                     f"[{AMBER}]⚠  Usage: inject <command>[/]",
                 )
                 return
-            self.app.call_from_thread(
+            self.call_from_thread(
                 self._ipc_send,
-                {"action": "inject", "payload": payload},
+                {"action": "inject_thought", "payload": payload},
             )
             return
 
-        self.app.call_from_thread(
+        self.call_from_thread(
             chat.write_system,
             f"[{AMBER}]⚠  Unknown: [{TEXT_BRIGHT}]{raw}[/]. "
             f"Type [{CYBER_CYAN}]help[/][{AMBER}].[/]",
         )
 
-    # ── Telemetry poll (thread) ───────────────────────────────────────────────
+    # ── Telemetry poll (async) ───────────────────────────────────────────────
 
-    @work(thread=True, exclusive=True, name="telemetry-poll")
-    def _poll_telemetry(self) -> None:
+    @work(exclusive=True, name="telemetry-poll")
+    async def _poll_telemetry(self) -> None:
         left   = self.query_one(LeftPane)
         header = self.query_one(YantraHeader)
         ts_log = self.query_one(ThoughtStream)
         footer = self.query_one(StatusFooter)
 
-        while True:
-            try:
-                data = _uds_get("/telemetry")
+        try:
+            data = await _uds_get("/telemetry")
 
-                raw_phase  = str(data.get("phase", "UNKNOWN")).upper()
-                phase      = raw_phase.split(".")[-1] if "." in raw_phase else raw_phase
-                iteration  = int(data.get("iteration",    0))
-                vram_used  = float(data.get("vram_used_gb",  0.0))
-                vram_tot   = float(data.get("vram_total_gb", 0.0))
-                gpu_util   = float(data.get("gpu_util_pct",  0.0))
-                cpu_pct    = float(data.get("cpu_pct",       0.0))
-                disk_free  = float(data.get("disk_free_gb",  0.0))
-                model      = str(data.get("active_model",       "—"))
-                routing    = str(data.get("inference_routing", "LOCAL"))
+            raw_phase  = str(data.get("phase", "UNKNOWN")).upper()
+            phase      = raw_phase.split(".")[-1] if "." in raw_phase else raw_phase
+            iteration  = int(data.get("iteration",    0))
+            vram_used  = float(data.get("vram_used_gb",  0.0))
+            vram_tot   = float(data.get("vram_total_gb", 0.0))
+            gpu_util   = float(data.get("gpu_util_pct",  0.0))
+            cpu_pct    = float(data.get("cpu_pct",       0.0))
+            disk_free  = float(data.get("disk_free_gb",  0.0))
+            model      = str(data.get("active_model",       "—"))
+            routing    = str(data.get("inference_routing", "LOCAL"))
 
-                def _apply(
-                    p=phase, i=iteration, vu=vram_used, vt=vram_tot,
-                    gu=gpu_util, cp=cpu_pct, df=disk_free, m=model, r=routing,
-                ) -> None:
-                    left.phase     = p
-                    left.iteration = i
-                    left.vram_used = vu
-                    left.vram_tot  = vt
-                    left.gpu_util  = gu
-                    left.cpu_pct   = cp
-                    left.disk_free = df
-                    left.model     = m
-                    left.routing   = r
-                    left.connected = True
-                    left.is_paused = self._is_paused
-                    header.connected = True
-                    header.paused    = self._is_paused
-                    header.iteration = i
-                    header.phase     = p
-                    ts_log.set_phase(p)
-                    footer.model  = m
-                    footer.route  = r
-                    footer.status = "PAUSED" if self._is_paused else "LIVE"
+            def _apply(
+                p=phase, i=iteration, vu=vram_used, vt=vram_tot,
+                gu=gpu_util, cp=cpu_pct, df=disk_free, m=model, r=routing,
+            ) -> None:
+                left.phase     = p
+                left.iteration = i
+                left.vram_used = vu
+                left.vram_tot  = vt
+                left.gpu_util  = gu
+                left.cpu_pct   = cp
+                left.disk_free = df
+                left.model     = m
+                left.routing   = r
+                left.connected = True
+                left.is_paused = self._is_paused
+                header.connected = True
+                header.paused    = self._is_paused
+                header.iteration = i
+                header.phase     = p
+                ts_log.set_phase(p)
+                footer.model  = m
+                footer.route  = r
+                footer.status = "PAUSED" if self._is_paused else "LIVE"
 
-                self.app.call_from_thread(_apply)
-                self._connected = True
+            _apply()
+            self._connected = True
 
-            except (ConnectionRefusedError, FileNotFoundError, OSError):
-                self._connected = False
+        except (ConnectionRefusedError, FileNotFoundError, OSError):
+            self._connected = False
 
-                def _offline() -> None:
-                    left.connected  = False
-                    left.phase      = "OFFLINE"
-                    header.connected = False
-                    header.phase     = "OFFLINE"
-                    footer.status    = "AWAIT"
-                    ts_log.write(
-                        f"[{TEXT_DIM}]{_ts()}[/]  [{AMBER}]○  Awaiting daemon …  {UDS_PATH}[/]"
-                    )
+            def _offline() -> None:
+                left.connected  = False
+                left.phase      = "[#FFB000] IPC DEGRADED ⚠[/]"
+                header.connected = False
+                header.phase     = "[#FFB000] IPC DEGRADED ⚠[/]"
+                footer.status    = "AWAIT"
 
-                self.app.call_from_thread(_offline)
-                time.sleep(RECONNECT_DELAY)
-                continue
+            _offline()
 
-            except Exception as exc:  # noqa: BLE001
-                self.app.call_from_thread(
-                    ts_log.write,
-                    f"[{TEXT_DIM}]{_ts()}[/]  [{AMBER}]⚠  Telemetry: {exc}[/]",
-                )
+        except Exception as exc:  # noqa: BLE001
+            ts_log.write(
+                f"[{TEXT_DIM}]{_ts()}[/]  [{AMBER}]⚠  Telemetry: {exc}[/]",
+            )
 
-            time.sleep(POLL_INTERVAL)
+    # ── SSE ThoughtStream (async) ────────────────────────────────────────────
 
-    # ── SSE ThoughtStream (thread) ────────────────────────────────────────────
-
-    @work(thread=True, exclusive=True, name="stream-logs")
-    def _stream_logs(self) -> None:
+    @work(exclusive=True, name="stream-logs")
+    async def _stream_logs(self) -> None:
         ts_log = self.query_one(ThoughtStream)
         header = self.query_one(YantraHeader)
         last_iter = 0
 
         while True:
             try:
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(30.0)
-                    sock.connect(UDS_PATH)
-                    sock.sendall(
-                        b"GET /stream HTTP/1.0\r\n"
-                        b"Host: localhost\r\n"
-                        b"Accept: text/event-stream\r\n"
-                        b"Connection: keep-alive\r\n\r\n"
-                    )
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_unix_connection(UDS_PATH), timeout=30.0
+                )
+                writer.write(
+                    b"GET /stream HTTP/1.0\r\n"
+                    b"Host: localhost\r\n"
+                    b"Accept: text/event-stream\r\n"
+                    b"Connection: keep-alive\r\n\r\n"
+                )
+                await writer.drain()
 
-                    buf = b""
-                    while b"\r\n\r\n" not in buf:
-                        c = sock.recv(256)
-                        if not c:
-                            break
-                        buf += c
-                    _, _, remainder = buf.partition(b"\r\n\r\n")
+                buf = b""
+                while b"\r\n\r\n" not in buf:
+                    c = await reader.read(256)
+                    if not c:
+                        break
+                    buf += c
+                _, _, remainder = buf.partition(b"\r\n\r\n")
 
-                    line_buf = remainder.decode(errors="replace")
-                    while True:
-                        raw_chunk = sock.recv(4096)
-                        if not raw_chunk:
-                            break
-                        line_buf += raw_chunk.decode(errors="replace")
-                        while "\n" in line_buf:
-                            line, line_buf = line_buf.split("\n", 1)
-                            line = line.strip()
-                            if not line.startswith("data:"):
+                line_buf = remainder.decode(errors="replace")
+                while True:
+                    raw_chunk = await reader.read(4096)
+                    if not raw_chunk:
+                        break
+                    line_buf += raw_chunk.decode(errors="replace")
+                    while "\n" in line_buf:
+                        line, line_buf = line_buf.split("\n", 1)
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        json_part = line[5:].strip()
+                        if not json_part or json_part == ":keepalive":
+                            continue
+                        try:
+                            evt = json.loads(json_part)
+                            msg = evt.get("log", "")
+                            if not msg:
                                 continue
-                            json_part = line[5:].strip()
-                            if not json_part or json_part == ":keepalive":
-                                continue
-                            try:
-                                evt = json.loads(json_part)
-                                msg = evt.get("log", "")
-                                if not msg:
-                                    continue
-                                ts       = _ts()
-                                coloured = _colorize_log(msg)
-                                self.app.call_from_thread(
-                                    ts_log.write,
-                                    f"[{TEXT_DIM}]{ts}[/]  {coloured}",
-                                )
-                                # Flash header on new iteration
-                                if "ITERATION #" in msg.upper() or "ITERATION" in msg.upper():
-                                    self.app.call_from_thread(header.flash_iteration)
-                            except json.JSONDecodeError:
-                                pass
+                            ts       = _ts()
+                            coloured = _colorize_log(msg)
+                            ts_log.write(
+                                f"[{TEXT_DIM}]{ts}[/]  {coloured}",
+                            )
+                            # Flash header on new iteration
+                            if "ITERATION #" in msg.upper() or "ITERATION" in msg.upper():
+                                header.flash_iteration()
+                        except json.JSONDecodeError:
+                            pass
 
             except (ConnectionRefusedError, FileNotFoundError, OSError):
-                time.sleep(RECONNECT_DELAY)
+                await asyncio.sleep(RECONNECT_DELAY)
                 continue
             except Exception:  # noqa: BLE001
-                time.sleep(RECONNECT_DELAY)
+                await asyncio.sleep(RECONNECT_DELAY)
                 continue
 
-    # ── IPC dispatcher (thread) ───────────────────────────────────────────────
+    # ── IPC dispatcher (async) ───────────────────────────────────────────────
 
-    @work(thread=True, name="ipc-post")
-    def _ipc_send(self, body: dict) -> None:
+    @work(name="ipc-post")
+    async def _ipc_send(self, body: dict) -> None:
         chat = self.query_one(ChatPane)
         left = self.query_one(LeftPane)
         try:
-            resp     = _uds_post("/command", body)
+            resp     = await _uds_post("/command", body)
             resp_str = json.dumps(resp, separators=(",", ":"))
 
             action = body.get("action", "")
-            if action == "pause":
+            if action == "pause_loop":
                 self._is_paused = True
-                self.app.call_from_thread(self._sync_pause)
-            elif action == "resume":
+                self._sync_pause()
+            elif action == "resume_loop":
                 self._is_paused = False
-                self.app.call_from_thread(self._sync_pause)
+                self._sync_pause()
 
-            self.app.call_from_thread(chat.write_system, f"[{ACID_GREEN}]{resp_str}[/]")
-            self.app.call_from_thread(left.update_resp, resp_str)
+            chat.write_system(f"[{ACID_GREEN}]{resp_str}[/]")
+            left.update_resp(resp_str)
 
         except (ConnectionRefusedError, FileNotFoundError, OSError):
-            self.app.call_from_thread(
-                chat.write_system,
+            chat.write_system(
                 f"[{AMBER}]⚠  Daemon not reachable — command dropped.[/]",
             )
         except Exception as exc:  # noqa: BLE001
-            self.app.call_from_thread(
-                chat.write_system,
+            chat.write_system(
                 f"[{CRIMSON}]✖  Failed: {exc}[/]",
             )
 
@@ -1662,7 +1699,7 @@ class YantraShell(App):
         self._poll_telemetry()
 
     async def action_toggle_pause(self) -> None:
-        self._ipc_send({"action": "resume" if self._is_paused else "pause"})
+        self._ipc_send({"action": "resume_loop" if self._is_paused else "pause_loop"})
 
     async def action_open_network(self) -> None:
         """Ctrl+N — push the Wi-Fi Network Manager modal."""

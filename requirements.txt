@@ -17,3 +17,6 @@ docker>=7.0.0
 # Pure TUI Interface
 textual>=0.76.0
 rich>=13.7.1
+
+# Configuration
+python-dotenv>=1.0.0

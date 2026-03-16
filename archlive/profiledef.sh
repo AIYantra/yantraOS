@@ -60,6 +60,13 @@ file_permissions=(
     ["/opt/yantra/core/ipc_server.py"]="0:0:0644"
     ["/opt/yantra/core/hybrid_router.py"]="0:0:0644"
     ["/opt/yantra/core/vector_memory.py"]="0:0:0644"
+    ["/opt/yantra/core/tui_shell.py"]="0:0:0644"
+    ["/opt/yantra/core/config.py"]="0:0:0644"
+    ["/opt/yantra/core/cloud.py"]="0:0:0644"
+    ["/opt/yantra/core/hardware.py"]="0:0:0644"
+    ["/opt/yantra/core/prompt.py"]="0:0:0644"
+    ["/opt/yantra/core/fleet_manager.py"]="0:0:0644"
+    ["/opt/yantra/core/installer.py"]="0:0:0644"
 
     # ── Virtual environment ──────────────────────────────────────────────
     ["/opt/yantra/venv"]="0:0:0755"
@@ -69,6 +76,8 @@ file_permissions=(
     ["/run/yantra"]="999:999:0770"
     ["/var/lib/yantra"]="999:999:0770"
     ["/var/lib/yantra/chromadb"]="999:999:0770"
+    ["/var/lib/yantra/cache"]="999:999:0770"
+    ["/var/log/yantra"]="999:999:0770"
 
     # ── Systemd, Polkit, Pacman hooks ────────────────────────────────────
     ["/etc/systemd/system/yantra.service"]="0:0:0644"
@@ -79,6 +88,9 @@ file_permissions=(
     # ── sysusers / tmpfiles ──────────────────────────────────────────────
     ["/usr/lib/sysusers.d/yantra.conf"]="0:0:0644"
     ["/usr/lib/tmpfiles.d/yantra.conf"]="0:0:0644"
+
+    # ── Docker VFS config ──────────────────────────────────────────────
+    ["/etc/docker/daemon.json"]="0:0:0644"
 
     # ── Boot scripts ─────────────────────────────────────────────────────
     ["/root/.automated_script.sh"]="0:0:0755"

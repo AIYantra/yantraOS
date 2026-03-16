@@ -48,6 +48,9 @@ RequiresMountsFor=/run/yantra /var/lib/yantra
 # The daemon sends this after all subsystem initialization in engine.run().
 Type=notify
 
+RuntimeDirectory=yantra
+RuntimeDirectoryMode=0755
+
 # ── Execution context ────────────────────────────────────────────────────────
 # Run as the unprivileged yantra_daemon user within the yantra group.
 # The venv Python interpreter ensures pip package isolation.
@@ -55,7 +58,8 @@ User=yantra_daemon
 Group=yantra
 ExecStart=/opt/yantra/venv/bin/python3 /opt/yantra/core/daemon.py
 Environment=PYTHONPATH=/opt/yantra
-Environment=XDG_CACHE_HOME=/var/lib/yantra/cache
+Environment="HOME=/tmp"
+Environment="XDG_CACHE_HOME=/tmp/.cache"
 Environment=HF_HOME=/var/lib/yantra/cache
 
 # ── Working directory ────────────────────────────────────────────────────────
@@ -94,9 +98,9 @@ SyslogIdentifier=yantra
 # ── Security hardening ───────────────────────────────────────────────────────
 # Defense-in-depth: restrict the daemon's access even beyond user isolation.
 NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
+#ProtectSystem=strict
+#ProtectHome=yes
+#PrivateTmp=yes
 
 # Allow write access only to the specific directories the daemon needs:
 #   /run/yantra          — UDS socket for IPC

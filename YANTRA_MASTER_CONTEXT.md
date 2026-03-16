@@ -1,6 +1,6 @@
 # YANTRA_MASTER_CONTEXT.md — Unified Engine Memory
 
-> **Version:** 3.1.0 | **Generated:** 2026-02-28 | **Classification:** MASTER REFERENCE — DO NOT FRAGMENT
+> **Version:** 4.0.0 | **Generated:** 2026-03-14 | **Classification:** MASTER REFERENCE — DO NOT FRAGMENT
 >
 > **Authority:** Euryale Ferox Private Limited | **Clearance:** Lead Architect
 
@@ -287,9 +287,11 @@ The loop runs with `time.sleep(10)` between iterations to prevent CPU thrashing.
 │   ├── hardware.py      # VRAM check → LOCAL_CAPABLE | CLOUD_ONLY
 │   ├── hybrid_router.py # LiteLLM routing with fallback arrays
 │   ├── sandbox.py       # Red Team hardened Docker sandbox (docker-py)
+│   ├── fleet_manager.py # Secure SSH gateway for multi-node Edge telemetry
 │   ├── vector_memory.py # ChromaDB RAG implementation
 │   ├── ipc_server.py    # UNIX Domain Socket IPC server
 │   ├── btrfs_manager.py # BTRFS snapshot/rollback manager
+│   ├── installer.py     # Atomic OS Installer pipeline (partitions, BTRFS, GRUB)
 │   ├── cloud.py         # Cloud inference backend
 │   ├── prompt.py        # LLM prompt engineering
 │   └── cli.py           # CLI entry point
@@ -442,7 +444,7 @@ When the inference engine generates code to execute:
 2. Spins up ephemeral Alpine Linux container via `docker-py` (`core/sandbox.py`).
 3. Container runs with the following **non-negotiable security matrix**:
    - `network_mode="none"` — zero network access (prevents exfiltration)
-   - `mem_limit="128m"` — OOM-killed at 128 MiB
+   - `mem_limit="512m"` — OOM-killed at 512 MiB
    - `cpu_quota=50000` — 50% of one CPU core maximum
    - `pids_limit=64` — fork bomb protection
    - `read_only=True` — immutable root filesystem
@@ -450,7 +452,7 @@ When the inference engine generates code to execute:
    - `security_opt=["no-new-privileges:true"]` — blocks setuid/setgid escalation
    - `auto_remove=True` — container destroyed immediately after exit
    - `tmpfs /tmp: size=64m, noexec, nosuid` — capped writable scratch
-   - `user="sandbox_user"` — runs as UID 1000 (custom unprivileged user)
+   - `user="nobody"` — runs as UID 65534 (nobody)
    - `privileged=False` — explicit denial (defense-in-depth)
 4. **Prohibition by Omission**: `volumes`, `binds`, `privileged`, `cap_add`, `pid_mode`, `ipc_mode`, `devices` parameters are **structurally absent** from the `execute()` method signature. No caller — including an LLM generating function calls — can inject them.
 5. **Image Allowlist**: Only `alpine:3.19`, `alpine:3.20`, `alpine:latest`, `yantra-agent:latest` are permitted. All other images rejected with `VALIDATION_ERROR`.
@@ -572,6 +574,7 @@ The daemon emits `yantraos/telemetry/v1` JSON (see §3.2) via:
 | 12    | ArchISO Build      | ✅ COMPLETE | Archlive generation: Disarmed hooks, mkarchiso workarounds, CRLF updates |
 | 13    | Native Validation  | ✅ COMPLETE | QEMU native testing, atomic installer (`install.sh`), systemd fixes |
 | **14**| **Gold Master v1.2** | ✅ COMPLETE | **Sandbox Red Team hardening, compile_iso.sh 6-invariant rewrite, build.sh prep script, docker.service decoupling** |
+| **15**| **Phase 2 Alpha / RC4** | ✅ COMPLETE | **Fleet Manager async SSH, Pure TUI (Wayland purged), ISO Verification, BTRFS Polkit integration, UFW lockdown** |
 
 ---
 
@@ -711,6 +714,33 @@ The daemon emits `yantraos/telemetry/v1` JSON (see §3.2) via:
    - Hardcoded `nvidia` and `nvidia-settings` directly into the `packages.x86_64` manifest for `mkarchiso` to pull the proprietary matrix.
    - Activated the **Nouveau Killswitch**: Appended `nouveau.modeset=0 nvidia-drm.modeset=1` to all *11* kernel execution boot lines to mathematically eliminate open-source driver conflicts.
    - Wrote `airootfs/etc/mkinitcpio.conf` specifying `MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)` to assure early-boot KMS initialization before any console or shell instantiation.
+
+## 18. Milestone 9: Phase 2 Alpha & RC4 Gold Master (March 2026)
+
+1. **Multi-Node Edge Topology (`core/fleet_manager.py`)**:
+   - Implemented a secure async SSH gateway module for fleet management.
+   - Authorized execution of telemetry commands (e.g., `htop`, `df -h`) on remote nodes listed in `/opt/yantra/config/nodes.json`.
+
+2. **Ephemeral Sandbox Hardening (`core/sandbox.py`)**:
+   - Elevated resource constraints: `mem_limit="512m"` to prevent premature OOMs during heavy tasks.
+   - Enforced maximum privilege isolation by executing containers as `user="nobody"` (UID 65534).
+   - Solidified Prohibition by Omission by strictly omitting `volumes`, `privileged`, and other dangerous Docker kwargs.
+   - Image allowed list locked to `alpine:3.19/3.20/latest` and `yantra-agent:latest`.
+
+3. **Pure TUI & ISO Consolidation (`archlive/compile_iso.sh`)**:
+   - Transitioned from `nmtui` and Wayland reliance to a pure headless/TUI boot.
+   - Integrated `getty@tty1` override to auto-login `yantra_user` directly into the TUI.
+   - Replaced NetworkManager dependency with a lightweight `iwd` stack.
+
+4. **Security & Validation Hooks**:
+   - **UFW Baseline**: Enforced default `DROP` for incoming traffic (`airootfs/etc/ufw/ufw.conf`).
+   - **Polkit Isolation**: Bound `pkexec btrfs` execution purely to the `yantra_daemon` user (`/etc/polkit-1/rules.d/50-yantra-btrfs.rules`), preventing unauthorized snapshot management.
+   - **ISO Verification**: Built `archlive/build_verify.sh` for cryptographic validation (`sha256sum`) and payload auditing (`bsdtar`) prior to distribution.
+
+5. **Kriya Loop Complete Audit (`core/engine.py`)**:
+   - Fully traced and validated the `SENSE → REASON → ACT → REMEMBER` pipeline.
+   - Confirmed deterministic LLM route fallbacks in `hybrid_router.py`.
+   - Closed the feedback loop: stdout/stderr from `sandbox.py` is accurately channeled back into the LLM context (`last_action_results`) for subsequent iterations.
 
 ---
 

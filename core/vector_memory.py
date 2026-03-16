@@ -179,7 +179,16 @@ class VectorMemory:
         # PersistentClient writes to /var/lib/yantra/chromadb.
         # Directory ownership (yantra_daemon:yantra) was set by systemd-tmpfiles.
         # The +C (nodatacow) attribute was applied in Milestone 1 — no chattr here.
-        self._client = chromadb.PersistentClient(path=self._path)
+        # On Live USB, overlayfs/tmpfs may refuse sqlite3 WAL-mode writes — fall back
+        # to an in-memory EphemeralClient rather than crashing the daemon.
+        try:
+            self._client = chromadb.PersistentClient(path=self._path)
+        except Exception as exc:
+            log.warning(
+                f"[#FFB000] VectorMemory operating in volatile Ephemeral mode "
+                f"(Live USB detected) — PersistentClient failed: {exc}"
+            )
+            self._client = chromadb.EphemeralClient()
 
         # get_or_create_collection is idempotent — safe on restart.
         self._exec_logs = self._client.get_or_create_collection(

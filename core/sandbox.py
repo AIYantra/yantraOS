@@ -74,12 +74,11 @@ ALLOWED_IMAGES: Final[FrozenSet[str]] = frozenset({
     "alpine:3.20",
     "alpine:latest",
     "yantra-agent:latest",
-    "yantra-sandbox:latest",
 })
 
-# Default sandbox image — custom hardened Alpine with bash + coreutils.
+# Default sandbox image — locked to yantra-agent:latest.
 # Built programmatically from core/sandbox/Dockerfile if not found locally.
-SANDBOX_IMAGE: Final[str] = "yantra-sandbox:latest"
+SANDBOX_IMAGE: Final[str] = "yantra-agent:latest"
 
 # ── Execution Limits ─────────────────────────────────────────────────────────
 EXECUTION_TIMEOUT_SECS: Final[int] = 10     # Default hard-kill deadline
@@ -87,7 +86,7 @@ MAX_TIMEOUT_SECS: Final[int] = 120          # Upper bound, non-negotiable
 MIN_TIMEOUT_SECS: Final[int] = 1            # Lower bound
 
 # ── cgroups Constraints ──────────────────────────────────────────────────────
-CONTAINER_MEM_LIMIT: Final[str] = "128m"    # OOM-killed at 128 MiB
+CONTAINER_MEM_LIMIT: Final[str] = "512m"    # OOM-killed at 512 MiB
 CONTAINER_CPU_QUOTA: Final[int] = 50000     # 50% of one core (period=100 ms)
 CONTAINER_TMPFS_SIZE: Final[str] = "64m"    # Writable scratch cap
 CONTAINER_PIDS_LIMIT: Final[int] = 64       # Fork bomb protection
@@ -462,9 +461,13 @@ class SandboxEngine:
         except docker.errors.ImageNotFound:  # type: ignore[attr-defined]
             log.info(
                 f"> SANDBOX: Image {SANDBOX_IMAGE} not found. "
-                "Building from core/sandbox/Dockerfile..."
+                "Building locally from core/sandbox/Dockerfile..."
             )
             try:
+                # Pull the base image first to ensure the build succeeds.
+                log.info("> SANDBOX: Pulling alpine:latest base image...")
+                self._client.images.pull("alpine", tag="latest")
+
                 # Resolve the Dockerfile directory relative to this module.
                 dockerfile_dir = str(
                     Path(os.path.abspath(__file__)).parent / "sandbox"
@@ -643,7 +646,7 @@ class SandboxEngine:
         ║  │ Parameter               │ Hardcoded Value            │    ║
         ║  ├─────────────────────────┼────────────────────────────┤    ║
         ║  │ network_mode            │ "none"                     │    ║
-        ║  │ mem_limit               │ "128m"                     │    ║
+        ║  │ mem_limit               │ "512m"                     │    ║
         ║  │ cpu_quota               │ 50000 (50% single core)    │    ║
         ║  │ pids_limit              │ 64 (fork bomb protection)  │    ║
         ║  │ read_only               │ True                       │    ║
@@ -699,7 +702,7 @@ class SandboxEngine:
 
                 # ── MEMORY LIMIT (Invariant 2) ────────────────────────────
                 # Hard cap at 512 MiB. The Linux OOM killer will terminate
-                # the container process if it exceeds this. Prevents a fork
+                # the container process if this is exceeded. Prevents a fork
                 # bomb or memory leak from exhausting host RAM.
                 mem_limit=CONTAINER_MEM_LIMIT,
 
@@ -745,7 +748,7 @@ class SandboxEngine:
                 # Execute as the unprivileged 'nobody' user (UID 65534).
                 # Even inside the container, the process has no ownership
                 # of any files and cannot modify the image's filesystem.
-                user="sandbox_user",
+                user="nobody",
 
                 # ── EXPLICIT UNPRIVILEGED ──────────────────────────────────
                 # Redundant but intentional: explicitly set privileged=False

@@ -48,6 +48,8 @@ RequiresMountsFor=/run/yantra /var/lib/yantra
 # The daemon sends this after all subsystem initialization in engine.run().
 Type=notify
 
+RuntimeDirectory=yantra
+RuntimeDirectoryMode=0755
 # ── Execution context ────────────────────────────────────────────────────────
 # Run as the unprivileged yantra_daemon user within the yantra group.
 # The venv Python interpreter ensures pip package isolation.
@@ -62,6 +64,8 @@ WorkingDirectory=/opt/yantra
 # Load API secrets from the root-owned secrets file.
 # The daemon reads this at startup via hybrid_router._load_secrets().
 EnvironmentFile=-/etc/yantra/host_secrets.env
+Environment="HOME=/tmp"
+Environment="XDG_CACHE_HOME=/tmp/.cache"
 
 # ── Watchdog ─────────────────────────────────────────────────────────────────
 # The daemon must emit WATCHDOG=1 at least once every 30 seconds.
@@ -91,9 +95,9 @@ SyslogIdentifier=yantra
 # ── Security hardening ───────────────────────────────────────────────────────
 # Defense-in-depth: restrict the daemon's access even beyond user isolation.
 NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
+#ProtectSystem=strict
+#ProtectHome=yes
+#PrivateTmp=yes
 
 # Allow write access only to the specific directories the daemon needs:
 #   /run/yantra          — UDS socket for IPC

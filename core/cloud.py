@@ -61,6 +61,9 @@ async def _post(session: "aiohttp.ClientSession", url: str, payload: dict) -> di
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             async with session.post(url, json=payload, timeout=REQUEST_TIMEOUT) as resp:
+                if resp.status == 422:
+                    log.warning(f"POST {url} failed with 422 Unprocessable Entity. Dropping payload.")
+                    return {}
                 resp.raise_for_status()
                 return await resp.json()
         except Exception as e:

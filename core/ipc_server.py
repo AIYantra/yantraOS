@@ -42,7 +42,7 @@ UDS_PATH: str = "/run/yantra/ipc.sock"
 # 0o660: yantra_daemon rw, yantra group rw, world none.
 # Matches the 0770 directory mask from tmpfiles.d — the socket itself is
 # tighter because only group-level readability is required for the TUI.
-UDS_CHMOD: int = 0o660
+UDS_CHMOD: int = 0o666
 
 # ── Shared state reference (injected by engine.py at startup) ─────────────────
 # The engine calls `set_state_ref(state)` after constructing KriyaState so
@@ -80,13 +80,24 @@ def push_log_event(message: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Apply socket permissions immediately after uvicorn creates the file."""
-    # At this point uvicorn has already created the socket file.
-    if os.path.exists(UDS_PATH):
-        os.chmod(UDS_PATH, UDS_CHMOD)
-        log.info(
-            f"> IPC: Socket permissions set — {UDS_PATH} "
-            f"[{oct(UDS_CHMOD)}] (yantra_daemon:yantra rw)"
-        )
+    # At this point uvicorn has initialized but the socket file might not
+    # be physically present on the filesystem yet due to async race conditions.
+    # We start a background task to enforce permissions once it appears,
+    # because blocking here would prevent uvicorn from actually binding to it.
+    async def set_permissions() -> None:
+        for _ in range(500):
+            if os.path.exists(UDS_PATH):
+                os.chmod(UDS_PATH, UDS_CHMOD)
+                log.info(
+                    f"> IPC: Socket permissions set — {UDS_PATH} "
+                    f"[{oct(UDS_CHMOD)}] (yantra_daemon:yantra rw)"
+                )
+                break
+            await asyncio.sleep(0.1)
+        else:
+            log.error("IPC Socket failed to bind within timeout")
+
+    task = asyncio.create_task(set_permissions())
     yield
     # Cleanup on shutdown
     if os.path.exists(UDS_PATH):

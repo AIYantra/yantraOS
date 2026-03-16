@@ -107,7 +107,7 @@ def probe_cpu_disk() -> tuple[float, float]:
         if os.name == "nt":
             disk_path = "C:\\"
         else:
-            disk_path = "/opt/yantra" if os.path.exists("/opt/yantra") else "/"
+            disk_path = "/tmp"  # ALway explicit check /tmp (writable overlay) to fix TUI reporting 0.0 GB on Live USB
 
         disk_free_gb = psutil.disk_usage(disk_path).free / (1024 ** 3)
 

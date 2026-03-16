@@ -68,6 +68,47 @@ if [[ -f /etc/pacman.d/hooks/00-yantra-autosnap.hook.inactive ]]; then
     log_ok "Hook reactivated successfully."
 fi
 
+log_info "7. Distributing Edge Fleet SSH Keys..."
+KEY_PATH="/opt/yantra/config/id_yantra_fleet"
+NODES_JSON="/opt/yantra/config/nodes.json"
+
+mkdir -p /opt/yantra/config
+if [[ ! -f "$KEY_PATH" ]]; then
+    log_info "Generating new Ed25519 SSH key pair at $KEY_PATH..."
+    ssh-keygen -t ed25519 -f "$KEY_PATH" -q -N ""
+    chmod 0400 "$KEY_PATH"
+    log_ok "SSH key created."
+else
+    log_info "SSH key $KEY_PATH already exists."
+fi
+
+if [[ -f "$NODES_JSON" ]]; then
+    log_info "Found nodes.json inventory. Distributing keys..."
+    # Parse the nodes.json for IP and Username via Python, outputting user@ip
+    python3 -c '
+import json, sys
+try:
+    data = json.load(open("'"$NODES_JSON"'"))
+    for ip, cfg in data.items():
+        user = cfg.get("user", "yantra")
+        key = cfg.get("key", "'"$KEY_PATH"'")
+        # Only distribute if the key matches the default fleet key we just verified/created
+        if key == "'"$KEY_PATH"'":
+            print(f"{user}@{ip}")
+except Exception as e:
+    print(f"Failed to parse nodes.json: {e}", file=sys.stderr)
+' | while read -r TARGET; do
+        if [ -n "$TARGET" ]; then
+            log_info "Pushing public key to $TARGET (you may prompt for password)..."
+            # ssh-copy-id will append the .pub key to their ~/.ssh/authorized_keys
+            ssh-copy-id -i "${KEY_PATH}.pub" "$TARGET" || log_error "Failed to copy key to $TARGET"
+        fi
+    done
+    log_ok "Fleet keys distribution logic completed."
+else
+    log_info "No nodes.json found at $NODES_JSON. Skipping key distribution."
+fi
+
 # Clear the trap as we finished successfully
 trap - ERR
 log_ok "Installation completed atomically."

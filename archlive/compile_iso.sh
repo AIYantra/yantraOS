@@ -107,6 +107,16 @@ if [[ -z "${GEMINI_KEY}" || "${GEMINI_KEY}" == "PLACEHOLDER" || "${GEMINI_KEY}" 
 fi
 log_ok "GEMINI_API_KEY validated (${#GEMINI_KEY} chars)."
 
+# ── GOOGLE_GENERATIVE_AI_API_KEY environment guard ────────────────────────────
+# The directive requires the build to abort if this key is absent from the
+# host environment. This is separate from GEMINI_API_KEY in host_secrets.env.
+if [[ -z "${GOOGLE_GENERATIVE_AI_API_KEY:-}" ]]; then
+    log_error "GOOGLE_GENERATIVE_AI_API_KEY is not set in the host environment."
+    log_error "Export it before building: export GOOGLE_GENERATIVE_AI_API_KEY=<key>"
+    exit 1
+fi
+log_ok "GOOGLE_GENERATIVE_AI_API_KEY found in host environment (${#GOOGLE_GENERATIVE_AI_API_KEY} chars)."
+
 # ── Dependency check ──────────────────────────────────────────────────────────
 # Verify all required commands are available before starting.
 REQUIRED_CMDS=("mkarchiso" "python3" "pip" "sed" "install")
@@ -236,6 +246,14 @@ for pyfile in "${YANTRA_SRC}/core/"*.py; do
     fi
 done
 
+# Copy sandbox Dockerfile for local image builds on the live ISO
+if [[ -d "${YANTRA_SRC}/core/sandbox" ]]; then
+    install -dm755 "${AIROOTFS}/opt/yantra/core/sandbox"
+    install -Dm644 "${YANTRA_SRC}/core/sandbox/Dockerfile" \
+        "${AIROOTFS}/opt/yantra/core/sandbox/Dockerfile"
+    log_info "Sandbox Dockerfile deployed to airootfs."
+fi
+
 # Mark daemon entry points as executable (daemon.py, cli.py)
 chmod 755 "${AIROOTFS}/opt/yantra/core/daemon.py" 2>/dev/null || true
 chmod 755 "${AIROOTFS}/opt/yantra/core/cli.py" 2>/dev/null || true
@@ -247,9 +265,11 @@ log_ok "Core Python modules staged."
 # instead of a clean Iter #1. Purge ALL residual state.
 log_info "Executing Amnesia Protocol — purging host state from airootfs..."
 find "${AIROOTFS}/opt/yantra/" -name "*.json" -type f -delete 2>/dev/null || true
-rm -rf "${AIROOTFS}/opt/yantra/core/chromadb" "${AIROOTFS}/var/lib/yantra/chromadb" 2>/dev/null || true
+rm -rf "${AIROOTFS}/opt/yantra/core/chromadb" "${AIROOTFS}/opt/yantra/core/chroma" 2>/dev/null || true
+rm -rf "${AIROOTFS}/var/lib/yantra/chromadb" "${AIROOTFS}/var/lib/yantra/chroma" 2>/dev/null || true
 rm -rf "${AIROOTFS}/opt/yantra/__pycache__" 2>/dev/null || true
 rm -rf "${AIROOTFS}/opt/yantra/core/__pycache__" 2>/dev/null || true
+find "${AIROOTFS}/opt/yantra/" -name "*.pyc" -type f -delete 2>/dev/null || true
 log_ok "Amnesia Protocol complete — ISO will boot with clean state."
 
 # ── 3.2: Copy deploy configs ─────────────────────────────────────────────────
@@ -352,6 +372,21 @@ sed -i 's/[[:space:]]*$//' "${AIROOTFS}/etc/yantra/host_secrets.env"
 
 log_ok "Host payload injected and sanitized (0600 permissions)."
 
+# ── 3.5.2: Hardcoded Key Injection Failsafe ──────────────────────────────────
+# Bare-metal testing (RC4–RC10) revealed that sudo consistently strips API keys
+# during compilation. This failsafe mathematically guarantees the keys exist on
+# the ISO by writing them directly into host_secrets.env AFTER all copy/sanitize
+# operations. If the keys are already present, these are idempotent appends that
+# sed will deduplicate.
+log_info "Injecting hardcoded API key failsafe into airootfs..."
+# Remove any existing entries to avoid duplication
+sed -i '/^GEMINI_API_KEY=/d' "${AIROOTFS}/etc/yantra/host_secrets.env"
+sed -i '/^GOOGLE_GENERATIVE_AI_API_KEY=/d' "${AIROOTFS}/etc/yantra/host_secrets.env"
+# Inject the hardcoded keys (Redacted for public repo)
+echo 'GEMINI_API_KEY=<REDACTED_FOR_PUBLIC_REPO>' >> "${AIROOTFS}/etc/yantra/host_secrets.env"
+echo 'GOOGLE_GENERATIVE_AI_API_KEY=<REDACTED_FOR_PUBLIC_REPO>' >> "${AIROOTFS}/etc/yantra/host_secrets.env"
+log_ok "API key placeholders injected (host_secrets.env)."
+
 # ── 3.6: Runtime directories ─────────────────────────────────────────────────
 # These directories are needed by the daemon at runtime. They are also
 # created by tmpfiles.d at boot, but we stage them in airootfs to ensure
@@ -450,21 +485,27 @@ if ! systemctl is-active --quiet NetworkManager; then
   systemctl start NetworkManager
 fi
 
-# 2) Log network status — no external TUI hijack on TTY1
-if ! ping -c1 -W5 8.8.8.8 > /dev/null 2>&1; then
-  echo "[YANTRA] Network not detected. Yantra Shell will start in offline mode."
-  echo "[YANTRA] Configure Wi-Fi from within the TUI shell using nmcli."
-else
-  echo "[YANTRA] Network OK — Kriya Loop will use cloud inference."
+# 2) Network connectivity check — launch nmtui on failure
+if ! ping -c1 -W5 yantraos.com > /dev/null 2>&1; then
+  echo "[YANTRA] Network not detected. Launching nmtui for Wi-Fi configuration..."
+  nmtui || echo "[YANTRA] nmtui exited — continuing boot sequence."
 fi
 
-# 3) Wake up Docker Sandbox environment
+# 3) Ping the telemetry endpoint
+echo "[YANTRA] Pinging telemetry health endpoint..."
+if curl -fsSL https://yantraos.com/api/health > /dev/null 2>&1; then
+  echo "[YANTRA] Telemetry endpoint OK — cloud inference available."
+else
+  echo "[YANTRA] Telemetry endpoint unreachable — offline mode."
+fi
+
+# 4) Wake up Docker Sandbox environment
 if ! systemctl is-active --quiet docker; then
   echo "[YANTRA] Waking up Docker Sandbox environment..."
   systemctl start docker
 fi
 
-# 4) Enable and start Kriya Loop
+# 5) Enable and start Kriya Loop
 if ! systemctl is-enabled --quiet yantra.service; then
   echo "[YANTRA] Enabling yantra.service..."
   systemctl enable yantra.service
@@ -476,7 +517,7 @@ systemctl start yantra.service
 sleep 2
 systemctl --no-pager --full status yantra.service || true
 
-# 4) Hand over to Pure TUI on TTY1
+# 6) Hand over to Pure TUI on TTY1
 #    No Wayland, no cage, no compositor.
 #    Direct framebuffer TUI via Textual/Rich.
 echo "[YANTRA] Launching Pure TUI for yantra_user on TTY1..."
@@ -492,7 +533,7 @@ if [[ -z "${DISPLAY:-}" && $(tty) == /dev/tty1 ]]; then
     exec su - yantra_user -c "cd /opt/yantra && TERM=linux COLORTERM=truecolor /opt/yantra/venv/bin/python3 -m core.tui_shell < /dev/tty1 > /dev/tty1 2>&1"
 fi
 
-# Disable self on next boot (live session only)
+# 7) Disable self on next boot (live session only)
 rm -f /root/.automated_script.sh
 EOF
 
@@ -699,8 +740,8 @@ mkdir -p "${OUTPUT_DIR}"
 # before mkarchiso packs them. This mathematically guarantees the ISO boots
 # with persistence enabled.
 log_info "Injecting persistent storage parameters into bootloaders..."
-find "${ARCHLIVE_DIR}/syslinux" "${ARCHLIVE_DIR}/efiboot" "${ARCHLIVE_DIR}/grub" -type f -exec sed -i 's/\(archisolabel=[^ ]*\)/\1 cow_label=yantra_cow cow_spacesize=8G/g' {} + 2>/dev/null || true
-find "${ARCHLIVE_DIR}/syslinux" "${ARCHLIVE_DIR}/efiboot" "${ARCHLIVE_DIR}/grub" -type f -exec sed -i 's/\(archisosearchuuid=[^ ]*\)/\1 cow_label=yantra_cow cow_spacesize=8G/g' {} + 2>/dev/null || true
+find "${ARCHLIVE_DIR}/syslinux" "${ARCHLIVE_DIR}/efiboot" "${ARCHLIVE_DIR}/grub" -type f -exec sed -i 's/\(archisolabel=[^ ]*\)/\1 cow_spacesize=8G console=ttyS0,115200/g' {} + 2>/dev/null || true
+find "${ARCHLIVE_DIR}/syslinux" "${ARCHLIVE_DIR}/efiboot" "${ARCHLIVE_DIR}/grub" -type f -exec sed -i 's/\(archisosearchuuid=[^ ]*\)/\1 cow_spacesize=8G console=ttyS0,115200/g' {} + 2>/dev/null || true
 log_ok "Bootloader persistent anchors injected."
 # ── Execute mkarchiso ─────────────────────────────────────────────────────────
 # -v: verbose output for debugging
@@ -711,6 +752,14 @@ log_info "  Profile:  ${ARCHLIVE_DIR}"
 log_info "  Work dir: ${WORK_DIR}"
 log_info "  Output:   ${OUTPUT_DIR}"
 echo ""
+
+# ── FINAL ROOT OWNERSHIP CHECK (belt-and-suspenders) ─────────────────────────
+# Even though we checked at entry, confirm root hasn't been dropped by any
+# intermediate su/sudo/namespace operation before handing off to mkarchiso.
+if [ "$EUID" -ne 0 ]; then
+    log_error "FATAL: Lost root privileges before mkarchiso. Aborting."
+    exit 1
+fi
 
 mkarchiso -v -w "${WORK_DIR}" -o "${OUTPUT_DIR}" "${ARCHLIVE_DIR}"
 

@@ -2,3 +2,4 @@ work/
 __pycache__/
 *.pyc
 host_secrets.env
+archlive/out/

@@ -215,7 +215,7 @@ class KriyaLoopEngine:
           2. Build yantraos/telemetry/v1 structured context queue.
           3. Query ChromaDB for semantically similar past outcomes.
           4. Stream inference from the hybrid router (ollama/llama3 → gemini/gemini-2.5-flash).
-          5. Dispatch thinking tokens to TUI via push_log_event().
+          5. Dispatch thinking tokens to TUI via log.info().
           6. Parse JSON response into pending_actions.
           7. Fall back to deterministic heuristics on any failure.
 
@@ -233,13 +233,19 @@ class KriyaLoopEngine:
             thought = self._state.injected_thoughts.pop(0)
             log.info(f"> INJECT: Prioritizing injected thought: {thought}")
             self._push_log(f"> INJECT: Executing — {thought}")
-            push_log_event(f"> INJECT: Executing — {thought}")
-            self._state.pending_actions.append({
-                "type": "injected_command",
-                "reason": f"Operator-injected: {thought}",
-                "script": thought,
-                "priority": "CRITICAL",
-            })
+            if thought.strip() == "install_os":
+                self._state.pending_actions.append({
+                    "type": "install_os",
+                    "reason": "Operator-triggered OS Installation",
+                    "priority": "CRITICAL",
+                })
+            else:
+                self._state.pending_actions.append({
+                    "type": "injected_command",
+                    "reason": f"Operator-injected: {thought}",
+                    "script": thought,
+                    "priority": "CRITICAL",
+                })
             msg = "> REASONING: Injected thought queued for ACT phase."
             log.info(msg)
             self._push_log(msg)
@@ -305,7 +311,7 @@ class KriyaLoopEngine:
         # ── Stream LLM inference with deadlock guard ───────────────────
         accumulated_response = ""
         try:
-            push_log_event("> REASONING: Streaming inference...")
+            log.info("> REASONING: Streaming inference...")
             self._push_log("> REASONING: Streaming inference...")
 
             async def _stream_and_collect() -> str:
@@ -332,7 +338,7 @@ class KriyaLoopEngine:
                 f"> REASONING: Inference complete "
                 f"({len(accumulated_response)} chars)."
             )
-            push_log_event("> REASONING: Inference complete.")
+            log.info("> REASONING: Inference complete.")
 
         except asyncio.TimeoutError:
             err = (
@@ -341,12 +347,10 @@ class KriyaLoopEngine:
             )
             log.error(err)
             self._push_log(err)
-            push_log_event(err)
         except Exception as exc:
             err = f"> REASON: Inference failed — {type(exc).__name__}: {exc}"
             log.error(err)
             self._push_log(err)
-            push_log_event(err)
 
             # ── Graceful fallback: reset to local model ────────────────
             # If the active model is a cloud endpoint, the same error will
@@ -359,7 +363,6 @@ class KriyaLoopEngine:
                 )
                 log.warning(fallback_msg)
                 self._push_log(fallback_msg)
-                push_log_event(fallback_msg)
                 self._state.active_model = "local/llama3"
                 self._state.inference_routing = "LOCAL_FALLBACK"
 
@@ -378,36 +381,47 @@ class KriyaLoopEngine:
                 actions = parsed.get("actions", [])
                 for action in actions:
                     if isinstance(action, dict) and "type" in action:
-                        self._state.pending_actions.append({
-                            "type": action["type"],
-                            "reason": action.get("reason", "LLM-inferred"),
-                            "script": action.get("script"),
-                            "priority": action.get("priority", "MEDIUM"),
-                        })
+                        if action["type"] == "fleet_query":
+                            self._state.pending_actions.append({
+                                "type": action["type"],
+                                "node_ip": action.get("node_ip", "UNKNOWN"),
+                                "query": action.get("query", "uptime"),
+                                "reason": action.get("reason", "Edge telemetry request"),
+                                "priority": action.get("priority", "HIGH"),
+                            })
+                        else:
+                            self._state.pending_actions.append({
+                                "type": action["type"],
+                                "reason": action.get("reason", "LLM-inferred"),
+                                "script": action.get("script"),
+                                "priority": action.get("priority", "MEDIUM"),
+                            })
                 msg = (
                     f"> REASONING: LLM proposed "
                     f"{len(self._state.pending_actions)} action(s)."
                 )
                 log.info(msg)
                 self._push_log(msg)
-                push_log_event(msg)
             except (json.JSONDecodeError, KeyError, TypeError) as exc:
                 log.warning(
                     f"> REASON: Failed to parse LLM response as JSON: {exc}. "
                     "Falling back to deterministic heuristics."
                 )
                 self._push_log("> REASONING: Parse failed — using heuristics.")
-                push_log_event("> REASONING: Parse failed — using heuristics.")
+                log.info("> REASONING: Parse failed — using heuristics.")
                 # Clear any partial actions from failed parse
                 self._state.pending_actions = []
 
         # ── Deterministic heuristic fallback ───────────────────────────
         # Always evaluate heuristics if LLM produced zero actions.
         if not self._state.pending_actions:
-            if self._state.disk_free_gb < 5:
+            is_live_usb = not os.path.exists("/opt/yantra")
+            disk_threshold = 2.0 if is_live_usb else 5.0
+            
+            if self._state.disk_free_gb < disk_threshold:
                 self._state.pending_actions.append({
                     "type": "cleanup",
-                    "reason": f"Low disk space: {self._state.disk_free_gb:.1f}GB free",
+                    "reason": f"Critically low disk free space detected ({self._state.disk_free_gb:.1f} GB). Initiating aggressive cleanup.",
                     "priority": "HIGH",
                 })
             if self._state.vram_used_gb > 0 and (
@@ -448,8 +462,82 @@ class KriyaLoopEngine:
 
             script = action.get("script")
 
+            # ── Custom Installer Action ──
+            if action_type == "install_os":
+                log.info("> ACTION: Launching OS Installer pipeline.")
+                self._push_log("> ACTION: Launching OS Installer pipeline.")
+                try:
+                    from .installer import execute_install
+                    def _installer_log(m: str):
+                        self._push_log(m)
+                        log.info(m)
+                    
+                    success = await execute_install(_installer_log)
+                    result = {
+                        "action": action_type,
+                        "status": "success" if success else "failure",
+                        "exit_code": 0 if success else 1,
+                        "ts": time.time()
+                    }
+                except Exception as exc:
+                    err_msg = f"> ACTION: Installer failed with exception: {exc}"
+                    log.error(err_msg)
+                    self._push_log(err_msg)
+                    result = {
+                        "action": action_type,
+                        "status": "error",
+                        "exit_code": 1,
+                        "ts": time.time()
+                    }
+                self._state.last_action_results.append(result)
+                continue
+
+            # ── Fleet Telemetry Action ──
+            elif action_type == "fleet_query":
+                node_ip = action.get("node_ip")
+                query_cmd = action.get("query")
+                
+                log.info(f"> ACTION: Querying Fleet Node {node_ip} for '{query_cmd}'")
+                self._push_log(f"> ACTION: Querying Edge Node {node_ip}")
+                
+                try:
+                    from .fleet_manager import query_node_telemetry
+                    success, output = await query_node_telemetry(node_ip, query_cmd)
+                    
+                    if success:
+                        msg = f"> FLEET: Node {node_ip} responded."
+                        self._push_log(msg)
+                        log.info(msg)
+                    else:
+                        msg = f"> ERROR: Fleet query to {node_ip} failed."
+                        self._push_log(msg)
+                        log.info(msg)
+                    
+                    result = {
+                        "action": action_type,
+                        "node_ip": node_ip,
+                        "query": query_cmd,
+                        "status": "success" if success else "failure",
+                        "output": output,
+                        "ts": time.time()
+                    }
+                except Exception as exc:
+                    err_msg = f"> ERROR: Fleet manager exception: {exc}"
+                    log.error(err_msg)
+                    self._push_log(err_msg)
+                    result = {
+                        "action": action_type,
+                        "node_ip": node_ip,
+                        "query": query_cmd,
+                        "status": "error",
+                        "output": str(exc),
+                        "ts": time.time()
+                    }
+                self._state.last_action_results.append(result)
+                continue
+
             # ── Injected commands: ALWAYS execute (sandbox → host fallback) ──
-            if action_type == "injected_command" and script:
+            elif action_type == "injected_command" and script:
                 executed = False
                 result: dict = {}
 
@@ -472,7 +560,7 @@ class KriyaLoopEngine:
                             f"{sandbox_result.duration_secs:.1f}s)"
                         )
                         self._push_log(status_msg)
-                        push_log_event(status_msg)
+                        log.info(status_msg)
 
                         stdout_text = (sandbox_result.stdout or "").strip()
                         stderr_text = (getattr(sandbox_result, "stderr", "") or "").strip()
@@ -481,14 +569,12 @@ class KriyaLoopEngine:
                         warn = f"> ACTION: Sandbox execution failed: {exc} — falling back to host."
                         log.warning(warn)
                         self._push_log(warn)
-                        push_log_event(warn)
 
                 # Attempt 2: Direct host execution (fallback)
                 if not executed:
                     fallback_msg = f"> ACTION: Executing on host — {script}"
                     log.info(fallback_msg)
                     self._push_log(fallback_msg)
-                    push_log_event(fallback_msg)
                     try:
                         proc = await asyncio.create_subprocess_shell(
                             script,
@@ -514,41 +600,45 @@ class KriyaLoopEngine:
                             f"(exit={exit_code})"
                         )
                         self._push_log(status_msg)
-                        push_log_event(status_msg)
+                        log.info(status_msg)
                     except asyncio.TimeoutError:
                         stdout_text, stderr_text = "", "Execution timed out (30s)"
                         result = {"action": action_type, "status": "timeout", "exit_code": -1, "ts": time.time()}
                         err_msg = f"> ACTION: {action_type} — TIMEOUT (30s limit)"
                         self._push_log(err_msg)
-                        push_log_event(err_msg)
+                        log.info(err_msg)
                     except Exception as exc:
                         stdout_text, stderr_text = "", str(exc)
                         result = {"action": action_type, "status": "error", "exit_code": -1, "ts": time.time()}
                         err_msg = f"> ACTION: {action_type} — execution error: {exc}"
                         self._push_log(err_msg)
-                        push_log_event(err_msg)
+                        log.info(err_msg)
 
                 # ── Broadcast stdout/stderr to TUI ThoughtStream via SSE ──
                 if stdout_text:
                     for line in stdout_text[:2000].splitlines():
                         out_msg = f"> STDOUT: {line}"
                         self._push_log(out_msg)
-                        push_log_event(out_msg)
+                        log.info(out_msg)
 
                 if stderr_text:
                     for line in stderr_text[:1000].splitlines():
                         err_msg = f"> STDERR: {line}"
                         self._push_log(err_msg)
-                        push_log_event(err_msg)
+                        log.info(err_msg)
 
             # ── Autonomous actions: require operational sandbox ───────────
             elif script and sandbox.is_operational:
                 sandbox_result = await sandbox.execute(script)
+                stdout_text = (sandbox_result.stdout or "").strip()
+                stderr_text = getattr(sandbox_result, "stderr", "") or ""
+                stderr_text = stderr_text.strip()
                 result = {
                     "action": action_type,
-                    "status": sandbox_result.outcome.value,
+                    "status": "success" if sandbox_result.exit_code == 0 else "failure",
                     "exit_code": sandbox_result.exit_code,
-                    "stdout": sandbox_result.stdout[:500],
+                    "stdout": stdout_text[:2000],
+                    "stderr": stderr_text[:2000],
                     "ts": time.time(),
                 }
                 status_msg = (
@@ -556,23 +646,29 @@ class KriyaLoopEngine:
                     f"(exit={sandbox_result.exit_code}, {sandbox_result.duration_secs:.1f}s)"
                 )
                 self._push_log(status_msg)
-                push_log_event(status_msg)
-
-                stdout_text = (sandbox_result.stdout or "").strip()
-                stderr_text = getattr(sandbox_result, "stderr", "") or ""
-                stderr_text = stderr_text.strip()
+                log.info(status_msg)
+                
+                # Report definitive outcomes
+                if sandbox_result.exit_code == 0:
+                    ok_msg = f"> SYSTEM: Autonomous Action '{action_type}' COMPLETED SUCCESSFULLY."
+                    log.info(ok_msg)
+                    self._push_log(ok_msg)
+                else:
+                    err_alert = f"> ERROR: Action '{action_type}' FAILED. Escalating stderr to LLM context for self-healing retry..."
+                    log.warning(err_alert)
+                    self._push_log(err_alert)
 
                 if stdout_text:
                     for line in stdout_text[:2000].splitlines():
                         out_msg = f"> STDOUT: {line}"
                         self._push_log(out_msg)
-                        push_log_event(out_msg)
+                        log.info(out_msg)
 
                 if stderr_text:
                     for line in stderr_text[:1000].splitlines():
                         err_msg = f"> STDERR: {line}"
                         self._push_log(err_msg)
-                        push_log_event(err_msg)
+                        log.info(err_msg)
             else:
                 # No script or sandbox degraded for non-injected actions
                 result = {"action": action_type, "status": "logged", "ts": time.time()}
@@ -760,7 +856,6 @@ class KriyaLoopEngine:
             msg = f"> DAEMON: — Iteration #{self._state.iteration} —"
             log.info(msg)
             self._push_log(msg)
-            push_log_event(msg)  # Feed SSE stream for TUI ThoughtStream
 
             try:
                 # Each successful phase completion pings the watchdog.

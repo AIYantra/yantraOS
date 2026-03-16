@@ -12,8 +12,12 @@ from __future__ import annotations
 
 import logging
 import os
+import dotenv
 from pathlib import Path
 from typing import Any, Dict
+
+if not os.getenv("GEMINI_API_KEY"):
+    dotenv.load_dotenv("/etc/yantra/host_secrets.env")
 
 logger = logging.getLogger(__name__)
 
