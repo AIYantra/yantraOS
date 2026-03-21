@@ -26,7 +26,7 @@
 
 <br/>
 
-[**`www.yantraos.com`**](https://yantraos.com) · [**`Documentation`**](https://yantraos.gitbook.io) · [**`Roadmap`**](https://github.com/orgs/YantraOS/projects/1) · [**`Discord`**](https://discord.gg/your-invite-link)
+[**`www.yantraos.com`**](https://yantraos.com) · [**`Documentation`**](https://yantraos.gitbook.io) · [**`Roadmap`**](https://github.com/orgs/YantraOS/projects/1) · [**`Discord`**](https://discord.gg/tkg6XQBPpK)
 
 </div>
 
@@ -350,7 +350,7 @@ Two processes. One socket. One mind.
 
 ```bash
 # Clone the repository
-git clone https://github.com/YantraOS/YantraOS.git
+git clone https://github.com/AIYantra/YantraOS.git
 cd YantraOS
 
 # Configure secrets (copy template and fill in your API keys)
