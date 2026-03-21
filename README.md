@@ -38,7 +38,7 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │  YOUR OS HAS BEEN PASSIVE FOR TOO LONG.                             │
 │                                                                     │
-│  Every traditional OS is a hammer — it waits for you to swing it.  │
+│  Every traditional OS is a hammer — it waits for you to swing it.   │
 │                                                                     │
 │  YantraOS is a mind.                                                │
 │  It reasons. It remembers. It acts. On its own.                     │
