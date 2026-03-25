@@ -1,0 +1,26 @@
+RELEASE: YantraOS v1.0-alpha (The Architecture of Autonomy)
+Classification: BARE-METAL ALPHA
+Target Architecture: x86_64
+ISO Size: Optimized (Minimal GPU Kernel Base + Runtime Hooks)
+
+We are proud to announce the Alpha release of YantraOS, the world's first Level 3 AI-Agent Operating System built as a native orchestration layer on top of Arch Linux.
+
+YantraOS represents an inversion of the traditional computing paradigm. It is not a passive tool waiting for input; it is a "Karma Yogi"—a relentless background entity running the Kriya Loop to monitor, optimize, and heal your system environment 24/7.
+
+Core Architectural Features:
+
+The Kriya Loop: A mathematically decoupled, asynchronous Python 3.12 daemon that executes a continuous SENSE → REASON → ACT cycle.
+
+Hybrid Inference Engine: Hardware should not be a barrier to intelligence. Powered by LiteLLM, YantraOS dynamically benchmarks VRAM on boot. Capable rigs (≥8GB VRAM) route locally to 100% air-gapped models (Ollama/Llama 3), while lower-end hardware seamlessly cascades to cloud APIs (Gemini 2.0 Flash/Claude 3.5 Haiku) via a Secure API Gateway.
+
+Red-Team Hardened Execution: AI hallucinations are mitigated by structural omission. All AI-generated commands execute inside an ephemeral, network-isolated Docker Sandbox (user="nobody", cap_drop=["ALL"]).
+
+Atomic BTRFS Stability: Integrated PolicyKit rules and pacman hooks guarantee pre-transaction BTRFS snapshots, providing zero-risk operational autonomy.
+
+The Yantra Shell (TUI): A futuristic, 3-pane Textual HUD communicating with the daemon exclusively via zero-latency UNIX Domain Sockets (/run/yantra/ipc.sock).
+
+Security & Privacy:
+This ISO has been purged via our Amnesia Protocol. The daemon runs entirely as the unprivileged yantra_daemon user, bound by strict systemd execution constraints (ProtectSystem=strict, NoNewPrivileges=yes).
+
+Getting Started:
+Please consult the QUICKSTART.md for instructions on flashing the ISO, establishing a network uplink via nmtui, and monitoring your node's live telemetry.
