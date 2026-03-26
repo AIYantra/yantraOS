@@ -21,12 +21,12 @@
 [![Platform](https://img.shields.io/badge/Platform-Arch%20Linux%20%7C%20Bare%20Metal-1793D1?style=for-the-badge&logo=archlinux&logoColor=white)](https://archlinux.org)
 [![Engine](https://img.shields.io/badge/Engine-Python%203.12%20%7C%20Asyncio-FFD700?style=for-the-badge&logo=python&logoColor=000000)](https://python.org)
 [![UI](https://img.shields.io/badge/Interface-Pure%20TUI%20%7C%20Textual-0057FF?style=for-the-badge&logo=gnometerminal&logoColor=white)]()
-[![Status](https://img.shields.io/badge/Status-Phase%203%20%7C%20RC9%20Production%20Finalization-00FF41?style=for-the-badge)]()
+[![Status](https://img.shields.io/badge/Status-RC5%20Golden%20Master%20%7C%20Bare--Metal-00FF41?style=for-the-badge)]()
 [![IPC](https://img.shields.io/badge/IPC-UNIX%20Domain%20Socket-00FF41?style=for-the-badge&logo=linux&logoColor=000000)]()
 
 <br/>
 
-[**`www.yantraos.com`**](https://yantraos.com) · [**`Documentation`**](https://yantraos.gitbook.io) · [**`Roadmap`**](https://github.com/orgs/YantraOS/projects/1) · [**`Discord`**](https://discord.gg/tkg6XQBPpK)
+[**`www.yantraos.com`**](https://yantraos.com) · [**`Documentation`**](https://yantraos.gitbook.io) · [**`Roadmap`**](https://github.com/orgs/YantraOS/projects/1) · [**`Discord`**](https://discord.gg/your-invite-link)
 
 </div>
 
@@ -38,7 +38,7 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │  YOUR OS HAS BEEN PASSIVE FOR TOO LONG.                             │
 │                                                                     │
-│  Every traditional OS is a hammer — it waits for you to swing it.   │
+│  Every traditional OS is a hammer — it waits for you to swing it.  │
 │                                                                     │
 │  YantraOS is a mind.                                                │
 │  It reasons. It remembers. It acts. On its own.                     │
@@ -350,7 +350,7 @@ Two processes. One socket. One mind.
 
 ```bash
 # Clone the repository
-git clone https://github.com/AIYantra/YantraOS.git
+git clone https://github.com/YantraOS/YantraOS.git
 cd YantraOS
 
 # Configure secrets (copy template and fill in your API keys)
@@ -407,10 +407,10 @@ python3 -m core.tui_shell
 
 ---
 
-## `12` · CURRENT STATE · MILESTONE 11 — PHASE 3 (RC9) PRODUCTION ★
+## `12` · CURRENT STATE · MILESTONE 6 — RC5 GOLDEN MASTER ★
 
-```text
-  MILESTONE TRACKER                              ▸ RC9 · BARE-METAL & AUTONOMY VERIFIED ✓
+```
+  MILESTONE TRACKER                              ▸ RC5 · BARE-METAL CONFIRMED ✓
   ════════════════════════════════════════════════════════════════════════════════
 
   [✓] Core Daemon orchestration loop (Kriya ∞)
@@ -426,7 +426,7 @@ python3 -m core.tui_shell
   [✓] Textual TUI — 3-pane HUD (Telemetry · ThoughtStream · Command prompt)
   [✓] Async IPC bridge: SSE ThoughtStream + /telemetry polling (2s cadence)
   [✓] Daemon ↔ TUI mathematically decoupled — daemon crash never kills TUI
-  [✓] systemd watchdog integration (WatchdogSec=30, phase-linked ping)
+  [✓] systemd watchdog integration (WatchdogSec=15, phase-linked ping)
 
   ── INTERACTIVE COMMAND ROUTER ★ NEW — BARE-METAL VERIFIED ───────────────────
   [✓] POST /command router — 8 registered actions:
@@ -436,36 +436,21 @@ python3 -m core.tui_shell
       execution; watchdog keepalive maintained during pause (no systemd kill)
   [✓] inject_thought — natural language injected into engine context_queue,
       consumed by REASON phase on the very next iteration tick
-  [✓] RC4 BARE-METAL TEST PASSED:
+  [✓] RC5 BARE-METAL TEST PASSED:
         ▸ pause_loop confirmed — iterations halted on physical hardware
         ▸ inject_thought "My laptop fan is loud, please check CPU" — confirmed
           picked up by engine on next iteration, visible in ThoughtStream
         ▸ resume_loop confirmed — autonomous loop restored
 
-  ── FLEET & EDGE TOPOLOGY (PHASE 2 ALPHA) ─────────────────────────────────────
+  ── IN PROGRESS ───────────────────────────────────────────────────────────────
   [✓] Docker sandbox execution pathway & TUI ThoughtStream logging
+  [~] Restricted SSH whitelisted command gateway
   [✓] Btrfs Snapper auto-snapshot integration
-  [✓] Restricted SSH whitelisted command gateway (fleet_manager.py)
-  [✓] Multi-node fleet management (Alpha + Edge topology)
-  [✓] Full end-to-end LLM → Docker → SSH → Host test (Kriya Loop Audit)
-  [✓] NVIDIA driver injection on live ISO (Nouveau Killswitch)
-
-  ── PHASE 3 (RC9) PRODUCTION FINALIZATION ─────────★───────────────────────────
-  [✓] Model Downscale: LLAMA_3_8B_Q4 migration for Edge hardware optimization
-  [✓] Graceful Cloud Failure: Fallback to LOCAL_ONLY on AuthenticationError
-  [✓] WebHUD WebSocket Sync: Explicit Uvicorn port=50000 / host="0.0.0.0" bind
-  [✓] Secure API Gateway: yantraos.com @ai-sdk/google telemetry bridging
-
-  ── RC6 BARE-METAL & INSTALLER STABILITY ──────────────────────────────────────
-  [✓] Installer Atomic Commit: Strict BTRFS sync & umount -R /mnt logic
-  [✓] Kriya Sandbox Upgrades: Host-fallback execution cascades for Web payload
-  [✓] Cognitive Ignition Sequence: Gemini API Key injection, IPC bridge valid
-  [✓] IPC Server Hardening: FastAPI Union return type crash resolutions
 
   ── ROADMAP ───────────────────────────────────────────────────────────────────
-  [ ] Multi-GPU inference routing
-  [ ] ARM architecture (Raspberry Pi 5) capability
-  [ ] Yantra Skill Store (Public RAG Market)
+  [ ] NVIDIA driver injection on live ISO
+  [ ] Full end-to-end LLM → Docker → SSH → Host test
+  [ ] Multi-node fleet management (Alpha + Edge topology)
 ```
 
 ---
