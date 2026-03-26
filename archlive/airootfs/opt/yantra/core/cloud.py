@@ -1,7 +1,7 @@
 """
 YantraOS — Cloud Bridge
 Local-to-Cloud async client connecting the Kriya Loop daemon
-to the deployed yantraos.com Web HUD.
+to the deployed www.yantraos.com Web HUD.
 
 Provides two capabilities:
   1. fetch_skill_from_cloud(query) — RAG skill lookup against Pinecone
@@ -26,7 +26,7 @@ log = logging.getLogger("yantra.cloud")
 
 # ── Config ────────────────────────────────────────────────────────
 
-HUD_BASE_URL = os.environ.get("YANTRA_HUD_URL", "https://yantraos.com")
+HUD_BASE_URL = os.environ.get("YANTRA_HUD_URL", "https://www.yantraos.com")
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15) if _AIOHTTP_AVAILABLE else None
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.5  # seconds
@@ -61,6 +61,9 @@ async def _post(session: "aiohttp.ClientSession", url: str, payload: dict) -> di
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             async with session.post(url, json=payload, timeout=REQUEST_TIMEOUT) as resp:
+                if resp.status == 422:
+                    log.warning(f"POST {url} failed with 422 Unprocessable Entity. Dropping payload.")
+                    return {}
                 resp.raise_for_status()
                 return await resp.json()
         except Exception as e:
@@ -76,7 +79,7 @@ async def _post(session: "aiohttp.ClientSession", url: str, payload: dict) -> di
 
 async def fetch_skill_from_cloud(query: str) -> list[SkillResult]:
     """
-    Query yantraos.com/api/skills/search for relevant capabilities.
+    Query www.yantraos.com/api/skills/search for relevant capabilities.
 
     Used by the Kriya Loop PATCH phase to resolve unknown dependencies —
     the daemon asks the cloud RAG store what skill can fulfill the need.
@@ -109,7 +112,7 @@ async def fetch_skill_from_cloud(query: str) -> list[SkillResult]:
 
 async def emit_telemetry(payload: TelemetryPayload) -> bool:
     """
-    Push daemon telemetry to yantraos.com/api/telemetry/ingest.
+    Push daemon telemetry to www.yantraos.com/api/telemetry/ingest/.
 
     Used by the Kriya Loop UPDATE_ARCHITECTURE phase to stream
     real-time hardware metrics and Kriya state to the Web HUD.
@@ -135,16 +138,37 @@ async def emit_telemetry(payload: TelemetryPayload) -> bool:
         log.error("> ERROR: aiohttp not installed. Run: pip install aiohttp")
         return False
 
-    url = f"{HUD_BASE_URL}/api/telemetry/ingest"
+    # TRACER BULLET: Hardcoded URL — no interpolation, no trailing slash
+    url = "https://www.yantraos.com/api/telemetry/ingest/"
 
     # Stamp the payload if not already timestamped
     if "timestamp" not in payload:
         payload["timestamp"] = time.time()
 
+    # TRACER BULLET: Fix VRAM percentage type mismatch
+    # Ensure it's a pure number! Strip '%' and rename 'util_pct' exactly as Vercel expects.
+    if "vram_usage" in payload:
+        v_u = payload["vram_usage"]
+        pct = v_u.get("percent", v_u.get("util_pct", 0))
+        if isinstance(pct, str):
+            pct = pct.replace('%', '')
+            
+        payload["vram_usage"] = {
+            "used_gb": round(float(v_u.get("used_gb", 0)), 2),
+            "total_gb": round(float(v_u.get("total_gb", 0)), 2),
+            "percent": round(float(pct), 1)
+        }
+
     log.debug(f"> TELEMETRY: Emitting {payload.get('kriya_phase', 'UNKNOWN')} state to cloud.")
 
+    # TRACER BULLET: Auth stripped — Content-Type only, no Bearer token
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {os.environ.get('YANTRA_TELEMETRY_TOKEN')}"
+    }
+
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=headers) as session:
             await _post(session, url, payload)
             return True
     except Exception as e:

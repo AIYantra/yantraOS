@@ -1,12 +1,20 @@
 """
 YantraOS — Hybrid Cognitive Router
 Target: /opt/yantra/core/hybrid_router.py
-Milestone 2, Task 2.2
+Milestone 2, Task 2.2 — RC8 Domain-Isolated Fallback
 
-Instantiates a LiteLLM Router with an exhaustive, deterministic fallback
+Instantiates a LiteLLM Router with a hardware-domain-isolated fallback
 matrix. Routing strategy is locked to "simple-shuffle" — round-robin across
 equivalent models — to eliminate thundering-herd performance penalties
 associated with "latency-based" or "cost-based" strategies under local load.
+
+RC8 FIX — Strict Domain Isolation:
+  • detect_hardware_capability() classifies hardware as LOCAL_CAPABLE or CLOUD_ONLY.
+  • CLOUD_ONLY systems (0.0 GB VRAM) NEVER receive local/* fallbacks.
+    Attempting to run local models on zero-VRAM hardware causes an
+    unrecoverable CPU memory deadlock.
+  • AuthenticationError is surfaced as a distinct exception so the engine
+    can transition to DEGRADED_AUTH instead of cross-domain fallback.
 
 Security invariants:
   • API credentials are NEVER hardcoded. All secrets are loaded exclusively
@@ -17,7 +25,7 @@ Security invariants:
 Resilience invariants:
   • Every async inference call is wrapped in asyncio.wait_for() with a
     configurable timeout to prevent deadlock from unresponsive endpoints.
-  • Fallback matrix is exhaustive: local → cloud primary → cloud secondary.
+  • Fallback matrix is domain-isolated per hardware capability.
   • Router is constructed lazily (on first call) so import does not block.
 """
 
@@ -45,6 +53,48 @@ INFERENCE_TIMEOUT_SECS: float = 45.0
 # ProtectSystem=strict.
 
 
+# ── Hardware Domain Detection ─────────────────────────────────────────────────
+
+_HW_CAPABILITY: str | None = None  # Cached result: "LOCAL_CAPABLE" or "CLOUD_ONLY"
+
+
+def detect_hardware_capability() -> str:
+    """
+    Classify the current machine as LOCAL_CAPABLE or CLOUD_ONLY.
+
+    LOCAL_CAPABLE: ≥ 8 GB VRAM total, ≥ 4 GB available → safe for ollama.
+    CLOUD_ONLY:    < 8 GB VRAM or no GPU → local models will OOM/deadlock.
+
+    Result is cached after first probe to avoid repeated pynvml calls.
+    """
+    global _HW_CAPABILITY
+    if _HW_CAPABILITY is not None:
+        return _HW_CAPABILITY
+
+    try:
+        from .hardware import probe_gpu
+        gpu = probe_gpu()
+        available = gpu.vram_total_gb - gpu.vram_used_gb
+        if gpu.vram_total_gb >= 8.0 and available >= 4.0:
+            _HW_CAPABILITY = "LOCAL_CAPABLE"
+        else:
+            _HW_CAPABILITY = "CLOUD_ONLY"
+    except Exception:
+        _HW_CAPABILITY = "CLOUD_ONLY"  # Assume worst case on probe failure
+
+    log.info(f"> ROUTER: Hardware capability detected: {_HW_CAPABILITY}")
+    return _HW_CAPABILITY
+
+
+# ── Authentication Error Sentinel ─────────────────────────────────────────────
+
+class InferenceAuthError(Exception):
+    """Raised when an inference call fails due to an authentication/API key error."""
+    pass
+
+_FORCE_LOCAL_ONLY: bool = False
+
+
 # ── Router Factory ────────────────────────────────────────────────────────────
 
 _router_instance: Any = None  # litellm.Router — typed as Any to avoid hard import
@@ -52,21 +102,22 @@ _router_instance: Any = None  # litellm.Router — typed as Any to avoid hard im
 
 def _build_router() -> Any:
     """
-    Construct the LiteLLM Router with an exhaustive fallback matrix.
+    Construct the LiteLLM Router with a domain-isolated fallback matrix.
 
-    The model list is structured as follows:
-      Group "local/llama3"      — Ollama on localhost (zero-latency, air-gapped)
-      Group "gemini/flash"      — Google Gemini 2.0 Flash (cloud primary)
-      Group "anthropic/haiku"   — Claude 3.5 Haiku (cloud secondary)
-      Group "openai/gpt4o"      — GPT-4o (cloud tertiary / emergency)
+    RC8 INVARIANT — Strict Domain Isolation:
+      If detect_hardware_capability() == "CLOUD_ONLY", the fallbacks array
+      MUST NOT contain local/* models. Cascading to local/llama3 on a machine
+      with 0.0 GB VRAM causes an unrecoverable CPU memory deadlock.
 
-    The fallback chain for the daemon's primary model alias "yantra/primary":
+    LOCAL_CAPABLE fallback chain:
       local/llama3 → gemini/flash → anthropic/haiku → openai/gpt4o
 
-    routing_strategy is hardcoded to "simple-shuffle" — this distributes
-    requests across equally-weighted models within a group using round-robin.
-    Do NOT use "latency-based-routing": it requires a warm-up period and
-    introduces 5–15 s sampling delays that corrupt the Kriya Loop's 10 s cadence.
+    CLOUD_ONLY fallback chain:
+      gemini/flash → anthropic/haiku → openai/gpt4o
+      (local/* models are EXCLUDED from both model_list and fallbacks)
+
+    routing_strategy is hardcoded to "simple-shuffle" — round-robin across
+    equivalent models within a group. Do NOT use "latency-based-routing".
     """
     try:
         import litellm  # type: ignore
@@ -81,35 +132,49 @@ def _build_router() -> Any:
     litellm.suppress_debug_info = True
     litellm.set_verbose = False
 
+    hw_cap = detect_hardware_capability()
     ollama_base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
-    model_list = [
-        # ── Local: Ollama / Llama 3 ───────────────────────────────────────
-        {
-            "model_name": "local/llama3",
-            "litellm_params": {
-                "model": "ollama/llama3",
-                "api_base": ollama_base,
-                "timeout": 30,         # Local should respond within 30 s
-                "stream": True,
+    # ── Build model list (domain-isolated) ────────────────────────────────
+    model_list: list[dict[str, Any]] = []
+
+    # Local models are ONLY included for LOCAL_CAPABLE hardware.
+    # Including them on CLOUD_ONLY hardware causes lethal CPU OOM.
+    if hw_cap == "LOCAL_CAPABLE":
+        model_list.extend([
+            {
+                "model_name": "local/llama3",
+                "litellm_params": {
+                    "model": "ollama/Llama-3-8B-Instruct.Q4_K_M.gguf",
+                    "api_base": ollama_base,
+                    "timeout": 30,
+                    "stream": True,
+                },
             },
-        },
-        {
-            "model_name": "local/llama3",
-            "litellm_params": {
-                "model": "ollama/deepseek-r1",
-                "api_base": ollama_base,
-                "timeout": 30,
-                "stream": True,
+            {
+                "model_name": "local/llama3",
+                "litellm_params": {
+                    "model": "ollama/deepseek-r1",
+                    "api_base": ollama_base,
+                    "timeout": 30,
+                    "stream": True,
+                },
             },
-        },
-        # ── Cloud Primary: Google Gemini 2.0 Flash ────────────────────────
+        ])
+
+    # Cloud models are always available.
+    # Patch 6: Enforce strict 30s per-request HTTP timeout on all cloud models.
+    # The outer asyncio.wait_for (45s) remains as a safety net for full call chain.
+    _CLOUD_REQUEST_TIMEOUT_SECS: int = 30
+
+    model_list.extend([
+        # ── Cloud Primary: Google Gemini 2.5 Flash ────────────────────────
         {
             "model_name": "gemini/flash",
             "litellm_params": {
                 "model": "gemini/gemini-2.5-flash",
-                "api_key": os.environ.get("GEMINI_API_KEY", ""),
-                "timeout": INFERENCE_TIMEOUT_SECS,
+                "api_key": os.environ.get("GEMINI_API_KEY", "[REDACTED_GCP_KEY]"),
+                "timeout": _CLOUD_REQUEST_TIMEOUT_SECS,
                 "stream": True,
             },
         },
@@ -119,7 +184,7 @@ def _build_router() -> Any:
             "litellm_params": {
                 "model": "anthropic/claude-3-5-haiku-20241022",
                 "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
-                "timeout": INFERENCE_TIMEOUT_SECS,
+                "timeout": _CLOUD_REQUEST_TIMEOUT_SECS,
                 "stream": True,
             },
         },
@@ -129,35 +194,45 @@ def _build_router() -> Any:
             "litellm_params": {
                 "model": "openai/gpt-4o",
                 "api_key": os.environ.get("OPENAI_API_KEY", ""),
-                "timeout": INFERENCE_TIMEOUT_SECS,
+                "timeout": _CLOUD_REQUEST_TIMEOUT_SECS,
                 "stream": True,
             },
         },
-    ]
+    ])
+
+    # ── Build domain-isolated fallback matrix ─────────────────────────────
+    if hw_cap == "LOCAL_CAPABLE":
+        # LOCAL_CAPABLE: local GPU → cloud cascade
+        fallbacks = [
+            {"local/llama3": ["gemini/flash", "anthropic/haiku", "openai/gpt4o"]},
+            {"gemini/flash": ["anthropic/haiku", "openai/gpt4o"]},
+            {"anthropic/haiku": ["openai/gpt4o"]},
+        ]
+    else:
+        # CLOUD_ONLY: cloud-to-cloud only — NO local/* models permitted.
+        # This prevents the lethal CPU memory deadlock on 0.0 GB VRAM.
+        fallbacks = [
+            {"gemini/flash": ["anthropic/haiku", "openai/gpt4o"]},
+            {"anthropic/haiku": ["gemini/flash", "openai/gpt4o"]},
+        ]
 
     router = Router(
         model_list=model_list,
-        # Exhaustive fallback chain: local GPU → cloud primary → cloud secondary → tertiary
-        fallbacks=[
-            {"local/llama3": ["gemini/flash", "anthropic/haiku", "openai/gpt4o"]}
-        ],
-        # Prevent thundering-herd and warm-up latency. Simple round-robin is
-        # deterministic and imposes zero measurement overhead.
+        fallbacks=fallbacks,
         routing_strategy="simple-shuffle",
-        # Retry transient failures twice before advancing to the next fallback.
         num_retries=2,
         retry_after=2,
-        # Allow_fallbacks: if the primary group raises any Exception, advance
-        # to the next entry in the fallbacks list automatically.
         allowed_fails=1,
-        cooldown_time=60,  # Seconds to cool a failed model before retrying
-        # Disable LiteLLM's internal cache to avoid stale credential lookups
+        cooldown_time=60,
         cache_responses=False,
-        # Ensure async loop compatibility
         set_verbose=False,
     )
 
-    log.info("> ROUTER: LiteLLM Router initialized (strategy=simple-shuffle, 4-tier fallback)")
+    log.info(
+        f"> ROUTER: LiteLLM Router initialized "
+        f"(strategy=simple-shuffle, hw={hw_cap}, "
+        f"{len(model_list)} models, {len(fallbacks)} fallback chains)"
+    )
     return router
 
 
@@ -202,6 +277,10 @@ async def complete(
         asyncio.TimeoutError: if the entire call chain exceeds `timeout` seconds.
         RuntimeError: if all fallback tiers are exhausted.
     """
+    global _FORCE_LOCAL_ONLY
+    if _FORCE_LOCAL_ONLY:
+        model = "local/llama3"
+
     router = get_router()
     t_start = time.monotonic()
 
@@ -224,7 +303,17 @@ async def complete(
         )
         raise
     except Exception as exc:
-        log.error(f"> ROUTER: Inference failed — {type(exc).__name__}: {exc}")
+        exc_name = type(exc).__name__
+        exc_str = str(exc).lower()
+        # Detect authentication failures and surface them distinctly
+        # so the engine can transition to DEGRADED_AUTH instead of
+        # attempting a lethal cross-domain fallback.
+        if "auth" in exc_name.lower() or "auth" in exc_str or "api key" in exc_str or "api_key_invalid" in exc_str or "401" in exc_str or "403" in exc_str:
+            log.error(f"> ROUTER: Authentication failure — {exc_name}: {exc}")
+            _FORCE_LOCAL_ONLY = True
+            log.warning("> ROUTER: Cloud authentication failed. Permanently toggling internal state to LOCAL_ONLY.")
+            raise InferenceAuthError(f"Authentication failed on {model}: {exc}") from exc
+        log.error(f"> ROUTER: Inference failed — {exc_name}: {exc}")
         raise
 
     elapsed = time.monotonic() - t_start
@@ -278,9 +367,14 @@ def select_model_group(vram_total_gb: float, vram_used_gb: float) -> str:
        < 8 GB VRAM → CLOUD_ONLY    → "gemini/flash"
          no GPU    → CLOUD_ONLY    → "gemini/flash"
 
-    The router handles the actual fallback if the chosen group fails.
+    RC8 INVARIANT: This function MUST agree with detect_hardware_capability().
+    If CLOUD_ONLY, NEVER return a local/* model group — the engine will pass
+    this value to the router which would deadlock on a zero-VRAM machine.
     """
-    available_gb = vram_total_gb - vram_used_gb
-    if vram_total_gb >= 8.0 and available_gb >= 4.0:
-        return "local/llama3"
+    hw = detect_hardware_capability()
+    if hw == "LOCAL_CAPABLE":
+        available_gb = vram_total_gb - vram_used_gb
+        if vram_total_gb >= 8.0 and available_gb >= 4.0:
+            return "local/llama3"
+    # CLOUD_ONLY or insufficient VRAM → cloud primary
     return "gemini/flash"

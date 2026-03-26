@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import json
 import re
-import socket
 import asyncio
+import hashlib
+import struct
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
@@ -71,8 +74,11 @@ PHASE_PATCH  = "#FF6B35"
 PHASE_UPDATE = "#1DE9B6"
 PHASE_OTHER  = "#4A5568"
 
-# ── IPC ───────────────────────────────────────────────────────────────────────
-UDS_PATH        = "/run/yantra/ipc.sock"
+# ── IPC (TCP/HTTP) ────────────────────────────────────────────────────────────
+IPC_BASE        = "http://127.0.0.1:50000"
+WS_HOST         = "127.0.0.1"
+WS_PORT         = 50000
+WS_PATH         = "/stream"
 POLL_INTERVAL   = 2.0
 RECONNECT_DELAY = 3.0
 MAX_LOG_LINES   = 1000
@@ -100,51 +106,36 @@ BOOT_BANNER = f"""\
 [{CYBER_CYAN} bold]║[/]  [{HEADER_GLOW} bold]   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝[/] [{CYBER_CYAN} bold]║[/]
 [{CYBER_CYAN} bold]║[/]  [{TEXT_MID}]     Autonomous OS  //  Kriya Loop Engine  v1.2     [/] [{CYBER_CYAN} bold]║[/]
 [{CYBER_CYAN} bold]╚══════════════════════════════════════════════════════════╝[/]
-[{TEXT_DIM}]  Connecting to daemon at {UDS_PATH} …[/]\
+[{TEXT_DIM}]  Connecting to daemon at {IPC_BASE} …[/]\
 """
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-async def _uds_get(path: str, timeout: float = 5.0) -> dict[str, Any]:
-    try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(UDS_PATH), timeout=timeout
-        )
-        writer.write(
-            f"GET {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n".encode()
-        )
-        await writer.drain()
-        raw = await reader.read()
-        writer.close()
-        await writer.wait_closed()
-        _, _, body = raw.partition(b"\r\n\r\n")
-        return json.loads(body.decode())
-    except Exception:
-        raise
-        
-async def _uds_post(path: str, body: dict, timeout: float = 5.0) -> dict[str, Any]:
-    try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(UDS_PATH), timeout=timeout
-        )
-        payload = json.dumps(body).encode()
-        headers = (
-            f"POST {path} HTTP/1.0\r\n"
-            "Host: localhost\r\n"
-            "Content-Type: application/json\r\n"
-            f"Content-Length: {len(payload)}\r\n"
-            "Connection: close\r\n\r\n"
-        ).encode()
-        writer.write(headers + payload)
-        await writer.drain()
-        raw = await reader.read()
-        writer.close()
-        await writer.wait_closed()
-        _, _, resp_body = raw.partition(b"\r\n\r\n")
-        return json.loads(resp_body.decode())
-    except Exception:
-        raise
+async def _http_get(path: str, timeout: float = 5.0) -> dict[str, Any]:
+    """HTTP GET against the FastAPI daemon via urllib (stdlib-only)."""
+    url = f"{IPC_BASE}{path}"
+    req = urllib.request.Request(url)
+    loop = asyncio.get_event_loop()
+    def _do():
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    return await loop.run_in_executor(None, _do)
+
+
+async def _http_post(path: str, body: dict, timeout: float = 5.0) -> dict[str, Any]:
+    """HTTP POST JSON against the FastAPI daemon via urllib (stdlib-only)."""
+    url = f"{IPC_BASE}{path}"
+    payload = json.dumps(body).encode()
+    req = urllib.request.Request(
+        url, data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    loop = asyncio.get_event_loop()
+    def _do():
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    return await loop.run_in_executor(None, _do)
 
 
 def _gauge(pct: float, width: int = 16) -> str:
@@ -1529,7 +1520,7 @@ class YantraShell(App):
         footer = self.query_one(StatusFooter)
 
         try:
-            data = await _uds_get("/telemetry")
+            data = await _http_get("/telemetry")
 
             raw_phase  = str(data.get("phase", "UNKNOWN")).upper()
             phase      = raw_phase.split(".")[-1] if "." in raw_phase else raw_phase
@@ -1569,7 +1560,7 @@ class YantraShell(App):
             _apply()
             self._connected = True
 
-        except (ConnectionRefusedError, FileNotFoundError, OSError):
+        except (urllib.error.URLError, ConnectionRefusedError, OSError):
             self._connected = False
 
             def _offline() -> None:
@@ -1588,69 +1579,52 @@ class YantraShell(App):
 
     # ── SSE ThoughtStream (async) ────────────────────────────────────────────
 
-    @work(exclusive=True, name="stream-logs")
-    async def _stream_logs(self) -> None:
+    @work(exclusive=True, thread=True, name="stream-logs")
+    def _stream_logs(self) -> None:
+        """Connect to http://127.0.0.1:50000/stream and display SSE log events."""
         ts_log = self.query_one(ThoughtStream)
         header = self.query_one(YantraHeader)
-        last_iter = 0
+
+        url = f"{IPC_BASE}/stream"
 
         while True:
             try:
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_unix_connection(UDS_PATH), timeout=30.0
-                )
-                writer.write(
-                    b"GET /stream HTTP/1.0\r\n"
-                    b"Host: localhost\r\n"
-                    b"Accept: text/event-stream\r\n"
-                    b"Connection: keep-alive\r\n\r\n"
-                )
-                await writer.drain()
-
-                buf = b""
-                while b"\r\n\r\n" not in buf:
-                    c = await reader.read(256)
-                    if not c:
-                        break
-                    buf += c
-                _, _, remainder = buf.partition(b"\r\n\r\n")
-
-                line_buf = remainder.decode(errors="replace")
-                while True:
-                    raw_chunk = await reader.read(4096)
-                    if not raw_chunk:
-                        break
-                    line_buf += raw_chunk.decode(errors="replace")
-                    while "\n" in line_buf:
-                        line, line_buf = line_buf.split("\n", 1)
-                        line = line.strip()
-                        if not line.startswith("data:"):
+                req = urllib.request.Request(url)
+                # The timeout applies to connection and intervals between chunks
+                with urllib.request.urlopen(req, timeout=30.0) as resp:
+                    while True:
+                        line_bytes = resp.readline()
+                        if not line_bytes:
+                            break  # Connection closed cleanly
+                        
+                        line = line_bytes.decode("utf-8", errors="replace").strip()
+                        if not line.startswith("data: "):
                             continue
-                        json_part = line[5:].strip()
-                        if not json_part or json_part == ":keepalive":
+
+                        payload = line[len("data: "):].strip()
+                        if not payload:
                             continue
+
                         try:
-                            evt = json.loads(json_part)
-                            msg = evt.get("log", "")
-                            if not msg:
-                                continue
-                            ts       = _ts()
-                            coloured = _colorize_log(msg)
-                            ts_log.write(
-                                f"[{TEXT_DIM}]{ts}[/]  {coloured}",
-                            )
-                            # Flash header on new iteration
-                            if "ITERATION #" in msg.upper() or "ITERATION" in msg.upper():
-                                header.flash_iteration()
+                            evt = json.loads(payload)
+                            msg = evt.get("message", "") or evt.get("log", "")
                         except json.JSONDecodeError:
-                            pass
+                            msg = payload
 
-            except (ConnectionRefusedError, FileNotFoundError, OSError):
-                await asyncio.sleep(RECONNECT_DELAY)
-                continue
-            except Exception:  # noqa: BLE001
-                await asyncio.sleep(RECONNECT_DELAY)
-                continue
+                        if msg:
+                            # Safely dispatch UI writes back to the main thread
+                            self.app.call_from_thread(self._render_log, msg, ts_log, header)
+            except Exception:
+                pass
+            
+            time.sleep(RECONNECT_DELAY)
+
+    def _render_log(self, msg: str, ts_log: ThoughtStream, header: YantraHeader) -> None:
+        ts_now   = _ts()
+        coloured = _colorize_log(msg)
+        ts_log.write(f"[{TEXT_DIM}]{ts_now}[/]  {coloured}")
+        if "ITERATION" in msg.upper():
+            header.flash_iteration()
 
     # ── IPC dispatcher (async) ───────────────────────────────────────────────
 
@@ -1659,7 +1633,7 @@ class YantraShell(App):
         chat = self.query_one(ChatPane)
         left = self.query_one(LeftPane)
         try:
-            resp     = await _uds_post("/command", body)
+            resp     = await _http_post("/command", body)
             resp_str = json.dumps(resp, separators=(",", ":"))
 
             action = body.get("action", "")
@@ -1673,7 +1647,7 @@ class YantraShell(App):
             chat.write_system(f"[{ACID_GREEN}]{resp_str}[/]")
             left.update_resp(resp_str)
 
-        except (ConnectionRefusedError, FileNotFoundError, OSError):
+        except (urllib.error.URLError, ConnectionRefusedError, OSError):
             chat.write_system(
                 f"[{AMBER}]⚠  Daemon not reachable — command dropped.[/]",
             )

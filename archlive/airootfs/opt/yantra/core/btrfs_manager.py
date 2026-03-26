@@ -65,6 +65,29 @@ _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+$")
 # Snapshot ID validation — must be a pure numeric integer.
 _NUMERIC_RE = re.compile(r"^[0-9]+$")
 
+
+def _build_btrfs_cmd(*args: str) -> list[str]:
+    """
+    Build a btrfs command array with UID-aware prefix selection.
+
+    When running as root (UID 0) — e.g., from a Pacman libalpm hook —
+    invoke /usr/bin/btrfs directly. No pkexec overhead, no unnecessary
+    polkitd roundtrip.
+
+    When running as yantra_daemon (non-root), prefix with pkexec to
+    escalate via the polkit rule in 50-yantra-btrfs.rules.
+
+    Args:
+        *args: btrfs subcommand arguments (e.g., "subvolume", "snapshot", "/").
+
+    Returns:
+        Command array ready for subprocess.run().
+    """
+    if os.getuid() == 0:
+        return [BTRFS_BIN, *args]
+    return [PKEXEC_BIN, BTRFS_BIN, *args]
+
+
 # ── Data Types ────────────────────────────────────────────────────────────────
 
 
@@ -213,20 +236,25 @@ def is_btrfs_available() -> bool:
 
 
 def _ensure_snapshot_root() -> bool:
-    """Ensure the /@snapshots directory exists."""
+    """Ensure the /@snapshots subvolume exists.
+
+    Uses `btrfs subvolume create` with UID-aware prefix selection.
+    When running as root (pacman hook), invokes btrfs directly.
+    When running as yantra_daemon, escalates via pkexec.
+    """
     snapshot_dir = Path(SNAPSHOT_ROOT)
     if snapshot_dir.exists():
         return True
     try:
-        # Create as a regular directory — the parent must be BTRFS mounted
         subprocess.run(
-            [PKEXEC_BIN, "/usr/bin/mkdir", "-p", SNAPSHOT_ROOT],
-            check=True, capture_output=True, timeout=10,
+            _build_btrfs_cmd("subvolume", "create", SNAPSHOT_ROOT),
+            check=True, capture_output=True, timeout=15,
         )
-        log.info(f"> BTRFS: Created snapshot directory {SNAPSHOT_ROOT}")
+        log.info(f"> BTRFS: Created snapshot subvolume {SNAPSHOT_ROOT}")
         return True
     except subprocess.CalledProcessError as exc:
-        log.error(f"> BTRFS: Failed to create {SNAPSHOT_ROOT}: {exc.stderr}")
+        stderr = exc.stderr.decode("utf-8", errors="replace").strip() if exc.stderr else ""
+        log.error(f"> BTRFS: Failed to create {SNAPSHOT_ROOT}: {stderr}")
         return False
     except Exception as exc:
         log.error(f"> BTRFS: Failed to create snapshot root: {exc}")
@@ -287,14 +315,7 @@ def create_snapshot(label: str = "") -> SnapshotResult:
     _ensure_snapshot_root()
 
     # ── Execute snapshot command ──────────────────────────────────────
-    cmd = [
-        PKEXEC_BIN,
-        BTRFS_BIN,
-        "subvolume",
-        "snapshot",
-        ACTIVE_ROOT,
-        snap_path,
-    ]
+    cmd = _build_btrfs_cmd("subvolume", "snapshot", ACTIVE_ROOT, snap_path)
 
     log.info(f"> BTRFS: Creating snapshot — {snap_name}")
     log.debug(f"> BTRFS: Command: {' '.join(cmd)}")
@@ -379,13 +400,7 @@ def get_snapshot_id(snapshot_path: str) -> int:
     Raises:
         RuntimeError: If the command fails or the ID is not numeric.
     """
-    cmd = [
-        PKEXEC_BIN,
-        BTRFS_BIN,
-        "inspect-internal",
-        "rootid",
-        snapshot_path,
-    ]
+    cmd = _build_btrfs_cmd("inspect-internal", "rootid", snapshot_path)
 
     log.info(f"> BTRFS: Querying rootid for {snapshot_path}")
 
@@ -435,14 +450,7 @@ def set_default_subvolume(subvol_id: int) -> None:
             f"got {type(subvol_id).__name__}={subvol_id}"
         )
 
-    cmd = [
-        PKEXEC_BIN,
-        BTRFS_BIN,
-        "subvolume",
-        "set-default",
-        str(subvol_id),
-        ACTIVE_ROOT,
-    ]
+    cmd = _build_btrfs_cmd("subvolume", "set-default", str(subvol_id), ACTIVE_ROOT)
 
     log.info(f"> BTRFS: Setting default subvolume to ID {subvol_id}")
 
@@ -623,10 +631,7 @@ def prune_old_snapshots(max_age_secs: int = PRUNE_MAX_AGE_SECS) -> int:
             )
             try:
                 subprocess.run(
-                    [
-                        PKEXEC_BIN, BTRFS_BIN,
-                        "subvolume", "delete", snap.path,
-                    ],
+                    _build_btrfs_cmd("subvolume", "delete", snap.path),
                     check=True,
                     capture_output=True,
                     timeout=30,
@@ -641,3 +646,59 @@ def prune_old_snapshots(max_age_secs: int = PRUNE_MAX_AGE_SECS) -> int:
     if pruned:
         log.info(f"> BTRFS: Pruned {pruned} snapshot(s) older than {max_age_secs // 86400} days.")
     return pruned
+
+
+# ── Kriya Loop Integration ────────────────────────────────────────────────────
+
+
+def create_snapshot_for_kriya(label: str = "") -> dict[str, Any]:
+    """
+    Create a BTRFS snapshot and return a structured alert for the Kriya Loop.
+
+    Wraps create_snapshot() and inspects the result. On failure, dispatches
+    a critical system alert via push_log_event() so the operator sees it
+    in the TUI ThoughtStream in real-time.
+
+    Returns:
+        A dict compatible with KriyaState.pending_actions format:
+        {"type": str, "reason": str, "priority": str, "snapshot_result": dict}
+    """
+    from .ipc_server import push_log_event
+
+    result = create_snapshot(label)
+
+    alert: dict[str, Any] = {
+        "type": "btrfs_snapshot",
+        "reason": result.message,
+        "priority": "LOW",
+        "snapshot_result": {
+            "outcome": result.outcome.value,
+            "name": result.snapshot_name,
+            "path": result.snapshot_path,
+            "duration_secs": result.duration_secs,
+        },
+    }
+
+    if result.outcome == SnapshotOutcome.SUCCESS:
+        msg = (
+            f"> BTRFS: Snapshot {result.snapshot_name} created "
+            f"({result.duration_secs:.2f}s)"
+        )
+        log.info(msg)
+        push_log_event(msg)
+        alert["priority"] = "LOW"
+    else:
+        # ── Critical alert: feed failure into cognitive pipeline ────────
+        err_msg = (
+            f"> ERROR: BTRFS snapshot FAILED — "
+            f"{result.outcome.value}: {result.message}"
+        )
+        if result.stderr:
+            err_msg += f" | stderr: {result.stderr[:500]}"
+
+        log.error(err_msg)
+        push_log_event(err_msg)
+        alert["priority"] = "CRITICAL"
+        alert["type"] = "btrfs_snapshot_failure"
+
+    return alert

@@ -42,7 +42,10 @@ from .prompt import get_system_prompt, get_safety_context
 from .cloud import emit_telemetry, fetch_skill_from_cloud
 from .hardware import probe_gpu, probe_cpu_disk
 from .ipc_server import serve as ipc_serve, set_state_ref, push_log_event
-from .hybrid_router import select_model_group, stream_complete, INFERENCE_TIMEOUT_SECS
+from .hybrid_router import (
+    select_model_group, stream_complete, INFERENCE_TIMEOUT_SECS,
+    detect_hardware_capability, InferenceAuthError,
+)
 from .vector_memory import memory as vector_memory, ExecutionRecord
 from .sandbox import sandbox, SandboxStatus
 
@@ -96,6 +99,7 @@ class KriyaState:
     # Interactive command support (pause / resume / inject)
     is_paused: bool = False
     injected_thoughts: list[str] = field(default_factory=list)
+    injected_directives: list[str] = field(default_factory=list)
 
 
 # ── Config ────────────────────────────────────────────────────────
@@ -175,10 +179,12 @@ class KriyaLoopEngine:
             self._last_watchdog_ping = now
 
     def _push_log(self, msg: str) -> None:
-        """Add a log entry and keep tail bounded."""
+        """Add a log entry to the bounded tail AND broadcast it to all WebSocket clients."""
         self._state.log_tail.append(msg)
         if len(self._state.log_tail) > self.MAX_LOG_TAIL:
             self._state.log_tail = self._state.log_tail[-self.MAX_LOG_TAIL:]
+        # Forward every log line to the asyncio queue consumed by _broadcast_logs()
+        push_log_event(msg)
 
     # ── Phase: SENSE ───────────────────────────────────────────────
 
@@ -233,11 +239,15 @@ class KriyaLoopEngine:
             thought = self._state.injected_thoughts.pop(0)
             log.info(f"> INJECT: Prioritizing injected thought: {thought}")
             self._push_log(f"> INJECT: Executing — {thought}")
-            if thought.strip() == "install_os":
+            thought_strip = thought.strip()
+            if thought_strip.startswith("install_os"):
+                parts = thought_strip.split(maxsplit=1)
+                disk = parts[1] if len(parts) > 1 else None
                 self._state.pending_actions.append({
                     "type": "install_os",
                     "reason": "Operator-triggered OS Installation",
                     "priority": "CRITICAL",
+                    "target_disk": disk,
                 })
             else:
                 self._state.pending_actions.append({
@@ -246,6 +256,7 @@ class KriyaLoopEngine:
                     "script": thought,
                     "priority": "CRITICAL",
                 })
+            self._state.injected_directives.append(thought)
             msg = "> REASONING: Injected thought queued for ACT phase."
             log.info(msg)
             self._push_log(msg)
@@ -347,16 +358,57 @@ class KriyaLoopEngine:
             )
             log.error(err)
             self._push_log(err)
+
+        except InferenceAuthError as exc:
+            # ── RC8 FIX: DEGRADED_AUTH state ───────────────────────────
+            # An AuthenticationError means the API key is missing or invalid.
+            # On CLOUD_ONLY hardware, falling back to local/llama3 is LETHAL
+            # (CPU memory deadlock on 0.0 GB VRAM). Instead, pause the
+            # reasoning loop and log the error for the operator.
+            hw_cap = detect_hardware_capability()
+            err = (
+                f"> REASON: AuthenticationError — {exc}. "
+                f"Hardware domain: {hw_cap}."
+            )
+            log.error(err)
+            self._push_log(err)
+
+            if hw_cap == "CLOUD_ONLY":
+                # DEGRADED_AUTH: pause the loop — do NOT attempt local fallback.
+                degraded_msg = (
+                    "> REASON: DEGRADED_AUTH — All cloud endpoints failed "
+                    "authentication. Cannot fall back to local models on "
+                    "CLOUD_ONLY hardware (0.0 GB VRAM). Pausing reasoning "
+                    "loop. Fix API keys in /etc/yantra/host_secrets.env "
+                    "and resume."
+                )
+                log.error(degraded_msg)
+                self._push_log(degraded_msg)
+                push_log_event(degraded_msg)
+                self._state.inference_routing = "DEGRADED_AUTH"
+                # Do NOT change active_model — keep it on the cloud endpoint
+                # so that when keys are fixed, the next iteration resumes
+                # cloud inference without manual intervention.
+            else:
+                # LOCAL_CAPABLE: safe to fall back to local inference.
+                fallback_msg = (
+                    f"> REASON: Auth error on {self._state.active_model} — "
+                    "falling back to local/llama3 (LOCAL_CAPABLE hardware)."
+                )
+                log.warning(fallback_msg)
+                self._push_log(fallback_msg)
+                self._state.active_model = "local/llama3"
+                self._state.inference_routing = "LOCAL_FALLBACK"
+
         except Exception as exc:
             err = f"> REASON: Inference failed — {type(exc).__name__}: {exc}"
             log.error(err)
             self._push_log(err)
 
-            # ── Graceful fallback: reset to local model ────────────────
-            # If the active model is a cloud endpoint, the same error will
-            # repeat every iteration → permanent crash-loop. Demote to
-            # local inference so the daemon stays alive.
-            if self._state.active_model != "local/llama3":
+            # ── RC8 FIX: Domain-isolated fallback ──────────────────────
+            # Only fall back to local/llama3 if hardware can support it.
+            hw_cap = detect_hardware_capability()
+            if self._state.active_model != "local/llama3" and hw_cap == "LOCAL_CAPABLE":
                 fallback_msg = (
                     f"> REASON: LiteLLM error on {self._state.active_model} — "
                     "falling back to local/llama3 for next iteration."
@@ -365,6 +417,16 @@ class KriyaLoopEngine:
                 self._push_log(fallback_msg)
                 self._state.active_model = "local/llama3"
                 self._state.inference_routing = "LOCAL_FALLBACK"
+            elif hw_cap == "CLOUD_ONLY":
+                # On CLOUD_ONLY, let the router's cloud→cloud fallback handle
+                # it. Do NOT switch to local. Log and proceed to heuristics.
+                cloud_msg = (
+                    f"> REASON: Error on {self._state.active_model} — "
+                    "CLOUD_ONLY hardware, keeping cloud routing. "
+                    "Router fallback matrix will try alternative cloud endpoints."
+                )
+                log.warning(cloud_msg)
+                self._push_log(cloud_msg)
 
         # ── Parse LLM response into pending_actions ────────────────────
         if accumulated_response:
@@ -472,7 +534,8 @@ class KriyaLoopEngine:
                         self._push_log(m)
                         log.info(m)
                     
-                    success = await execute_install(_installer_log)
+                    t_disk = action.get("target_disk")
+                    success = await execute_install(_installer_log, target_disk=t_disk)
                     result = {
                         "action": action_type,
                         "status": "success" if success else "failure",
@@ -541,8 +604,8 @@ class KriyaLoopEngine:
                 executed = False
                 result: dict = {}
 
-                # Attempt 1: Docker sandbox (if operational)
-                if sandbox.is_operational:
+                # Attempt 1: Docker sandbox (DISABLED — always use host fallback)
+                if False and sandbox.is_operational:
                     try:
                         sandbox_result = await sandbox.execute(script)
                         result = {

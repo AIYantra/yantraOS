@@ -26,7 +26,7 @@ async def run_cmd_async(cmd: str, log_cb: Callable[[str], None], env: dict = Non
 
     return await process.wait()
 
-async def execute_install(log_callback: Callable[[str], None]) -> bool:
+async def execute_install(log_callback: Callable[[str], None], target_disk: Optional[str] = None) -> bool:
     """
     Executes the bare-metal installation pipeline:
     1. Detect disk
@@ -40,23 +40,23 @@ async def execute_install(log_callback: Callable[[str], None]) -> bool:
     # 1. Drive Detection
     # Look for the primary internal drive. Typical naming: nvme0n1 or sda.
     # Exclude loop devices or obvious USBs if possible, just naive matching for now.
-    proc = await asyncio.create_subprocess_shell(
-        "lsblk -d -n -o NAME,TYPE | grep disk | awk '{print $1}'",
-        stdout=asyncio.subprocess.PIPE
-    )
-    stdout, _ = await proc.communicate()
-    disks = stdout.decode().strip().split('\n')
-    
-    target_disk = None
-    for d in disks:
-        if d.startswith("nvme0n1") or d.startswith("sda"):
-            target_disk = f"/dev/{d}"
-            break
-    
-    if not target_disk:
-        log_callback(f"> ERROR: Could not identify a valid target disk among: {disks}")
-        return False
+    if target_disk is None:
+        proc = await asyncio.create_subprocess_shell(
+            "lsblk -d -n -o NAME,TYPE | grep disk | awk '{print $1}'",
+            stdout=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        disks = stdout.decode().strip().split('\n')
         
+        for d in disks:
+            if d.startswith("nvme0n1") or d.startswith("sda"):
+                target_disk = f"/dev/{d}"
+                break
+        
+        if not target_disk:
+            log_callback(f"> ERROR: Could not identify a valid target disk among: {disks}")
+            return False
+            
     log_callback(f"> Target disk identified: {target_disk}")
     
     # Check if disk has partitions (simple warning/wipe concept)
@@ -140,13 +140,67 @@ async def execute_install(log_callback: Callable[[str], None]) -> bool:
     if code != 0:
         log_callback(f"> ERROR: Rsync failed with code {code}")
         return False
+
+    # 4b. Reconstruct kernel & initramfs inside the new rootfs.
+    # The live ISO keeps vmlinuz/initramfs under /run/archiso (excluded by rsync).
+    # Since archiso copytoram=y unmounts the physical medium, we must dynamically locate
+    # the ISO block device, mount it, copy the kernel, and then run mkinitcpio.
+    log_callback("> Locating raw ISO block device for kernel extraction...")
+    
+    # Locate raw ISO block device
+    blkid_proc = await asyncio.create_subprocess_shell(
+        "blkid -t TYPE=iso9660 -o device | head -n 1",
+        stdout=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await blkid_proc.communicate()
+    iso_dev = stdout.decode().strip()
+    
+    if not iso_dev:
+        log_callback("> ERROR: Fatal: Could not locate iso9660 block device via blkid.")
+        return False
+        
+    log_callback(f"> Located ISO device at {iso_dev}. Executing extraction sequence...")
+    
+    # The linux.preset content that mkinitcpio needs to generate a valid initramfs.
+    # Without this, the permanent disk has no preset (archiso.conf is deleted above)
+    # and mkinitcpio produces no initramfs → kernel panic on first boot.
+    _LINUX_PRESET = (
+        'ALL_config="/etc/mkinitcpio.conf"\n'
+        'ALL_kver="/boot/vmlinuz-linux"\n'
+        "PRESETS=('default')\n"
+        'default_image="/boot/initramfs-linux.img"\n'
+    )
+
+    kernel_cmds = [
+        "mkdir -p /tmp/iso_mount",
+        f"mount {iso_dev} /tmp/iso_mount",
+        "cp /tmp/iso_mount/arch/boot/x86_64/vmlinuz-linux /mnt/boot/vmlinuz-linux",
+        "umount /tmp/iso_mount",
+        "sed -i 's/^MODULES=.*/MODULES=(btrfs virtio virtio_blk virtio_pci virtio_net)/' /mnt/etc/mkinitcpio.conf",
+        # Delete leftover archiso preset — it references live CD paths that don't exist.
+        "rm -f /mnt/etc/mkinitcpio.d/archiso.conf",
+        # Create the permanent linux preset so mkinitcpio knows where to write the initramfs.
+        f"bash -c 'cat > /mnt/etc/mkinitcpio.d/linux.preset << \"PRESET_EOF\"\n{_LINUX_PRESET}PRESET_EOF'",
+        # Build ONLY the linux preset — not -P (which would try all presets including any ghosts).
+        "arch-chroot /mnt mkinitcpio -p linux"
+    ]
+    
+    for cmd in kernel_cmds:
+        code = await run_cmd_async(cmd, log_callback)
+        if code != 0:
+            log_callback(f"> ERROR: Kernel extraction/reconstruction failed executing: {cmd}")
+            # Ensure cleanup happens if a command fails after mounting
+            await run_cmd_async("umount /tmp/iso_mount || true", lambda x: None)
+            return False
         
     # 5. Bootloader & Fstab
     log_callback("> Generating fstab and installing GRUB Bootloader")
     boot_cmds = [
         f"genfstab -U /mnt > /mnt/etc/fstab",
-        f"arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=YantraOS --recheck",
-        f"arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg"
+        f"arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=YantraOS --removable --recheck",
+        f"arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg",
+        # Patch 3: Disable tmpfs on /tmp — allow full BTRFS partition usage for Docker sandbox.
+        f"arch-chroot /mnt systemctl mask tmp.mount"
     ]
     
     for cmd in boot_cmds:
@@ -154,9 +208,34 @@ async def execute_install(log_callback: Callable[[str], None]) -> bool:
         if code != 0:
             return False
             
-    # Cleanup
-    log_callback("> Installation Complete! Cleaning up mounts...")
-    await run_cmd_async("umount -R /mnt", log_callback)
+    # Cleanup & Atomic Commit
+    log_callback("> Installation Complete! Committing filesystem to persistent matrix...")
     
+    sync_cmds = [
+        "sync",
+        "umount -R /mnt",
+        "sync"
+    ]
+    
+    for cmd in sync_cmds:
+        code = await run_cmd_async(cmd, log_callback)
+        if code != 0:
+            log_callback(f"> ERROR: Filesystem synchronization failed on '{cmd}'. The filesystem may be busy.")
+            return False
+            
     log_callback("> YANTRA OS INSTALLED SUCCESSFULLY. YOU MAY REBOOT.")
     return True
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python3 installer.py <target_disk> (e.g., /dev/sda)")
+        sys.exit(1)
+    target = sys.argv[1]
+    print(f"WARNING: MANUALLY IGNITING INSTALLATION ON {target}")
+    
+    def _print_log(msg: str):
+        print(msg)
+        
+    asyncio.run(execute_install(_print_log, target_disk=target))

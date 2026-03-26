@@ -8,7 +8,7 @@ acquisition system (YANTRA_MASTER_CONTEXT §4.9). Each successful execution
 path is embedded and stored so the daemon can retrieve verified solutions
 before generating new code.
 
-Storage backend: ChromaDB PersistentClient at /var/lib/yantra/chroma
+Storage backend: ChromaDB PersistentClient at /var/lib/yantra/chromadb
   - Ownership: yantra_daemon:yantra (set by systemd-tmpfiles in Milestone 1)
   - BTRFS +C (nodatacow) attribute applied to the directory — no chown
     or chattr operations are required or performed in this module.
@@ -44,7 +44,7 @@ log = logging.getLogger("yantra.vector_memory")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-CHROMA_PATH: str = "/var/lib/yantra/chroma"
+CHROMA_PATH: str = "/var/lib/yantra/chromadb"
 
 # Collection names — changing these after first boot requires a migration.
 COLLECTION_EXECUTION_LOGS: str = "execution_logs"
@@ -139,6 +139,7 @@ class VectorMemory:
             max_workers=1, thread_name_prefix="yantra-chroma"
         )
         self._initialized: bool = False
+        self._init_failed: bool = False  # True if init was attempted and failed
 
     async def initialize(self) -> None:
         """
@@ -149,13 +150,22 @@ class VectorMemory:
         """
         if self._initialized:
             return
+        if self._init_failed:
+            return  # Already tried and failed — don't retry every cycle
 
         log.info(f"> MEMORY: Initializing ChromaDB at {self._path}")
 
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(self._executor, self._blocking_init)
-        self._initialized = True
-        log.info("> MEMORY: ChromaDB initialized. Collections ready.")
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(self._executor, self._blocking_init)
+            self._initialized = True
+            log.info("> MEMORY: ChromaDB initialized. Collections ready.")
+        except Exception as exc:
+            self._init_failed = True
+            log.warning(
+                f"> MEMORY: ChromaDB initialization failed — memory subsystem DEGRADED. "
+                f"Reason: {exc}. Storage calls will be silently skipped."
+            )
 
     def _blocking_init(self) -> None:
         """Blocking ChromaDB initialization — runs in the dedicated executor."""
@@ -166,10 +176,19 @@ class VectorMemory:
                 "chromadb is not installed. Run: pip install chromadb"
             ) from exc
 
-        # PersistentClient writes to /var/lib/yantra/chroma.
+        # PersistentClient writes to /var/lib/yantra/chromadb.
         # Directory ownership (yantra_daemon:yantra) was set by systemd-tmpfiles.
         # The +C (nodatacow) attribute was applied in Milestone 1 — no chattr here.
-        self._client = chromadb.PersistentClient(path=self._path)
+        # On Live USB, overlayfs/tmpfs may refuse sqlite3 WAL-mode writes — fall back
+        # to an in-memory EphemeralClient rather than crashing the daemon.
+        try:
+            self._client = chromadb.PersistentClient(path=self._path)
+        except Exception as exc:
+            log.warning(
+                f"[#FFB000] VectorMemory operating in volatile Ephemeral mode "
+                f"(Live USB detected) — PersistentClient failed: {exc}"
+            )
+            self._client = chromadb.EphemeralClient()
 
         # get_or_create_collection is idempotent — safe on restart.
         self._exec_logs = self._client.get_or_create_collection(
@@ -191,11 +210,15 @@ class VectorMemory:
             f"error_patterns: {self._error_patterns.count()} records"
         )
 
-    def _require_initialized(self) -> None:
+    async def _require_initialized(self) -> None:
+        """Ensure ChromaDB is ready. If init failed, raise to skip the operation."""
+        if self._initialized:
+            return
+        if self._init_failed:
+            raise RuntimeError("VectorMemory is DEGRADED — ChromaDB init failed on startup.")
+        await self.initialize()
         if not self._initialized:
-            raise RuntimeError(
-                "VectorMemory.initialize() must be awaited before use."
-            )
+            raise RuntimeError("VectorMemory is DEGRADED — ChromaDB init failed on startup.")
 
     # ── Write Operations ──────────────────────────────────────────────────────
 
@@ -206,7 +229,7 @@ class VectorMemory:
         Non-blocking: the ChromaDB upsert runs in the dedicated executor.
         Returns the record ID for confirmation.
         """
-        self._require_initialized()
+        await self._require_initialized()
         loop = asyncio.get_event_loop()
 
         record_id = record.record_id()
@@ -240,7 +263,7 @@ class VectorMemory:
         Store a known error pattern and its verified remediation sequence.
         Used by the PATCH phase to persist cloud-sourced skill resolutions.
         """
-        self._require_initialized()
+        await self._require_initialized()
         loop = asyncio.get_event_loop()
 
         record_id = hashlib.sha256(error_signature.encode()).hexdigest()[:16]
@@ -269,7 +292,7 @@ class VectorMemory:
         skill_data should conform to the yantraos/skill/v1 schema (§3.1).
         The document embedding is derived from title + description + tags.
         """
-        self._require_initialized()
+        await self._require_initialized()
         loop = asyncio.get_event_loop()
 
         title = skill_data.get("title", "")
@@ -310,7 +333,7 @@ class VectorMemory:
 
         Non-blocking: query runs in the dedicated executor.
         """
-        self._require_initialized()
+        await self._require_initialized()
         loop = asyncio.get_event_loop()
 
         where: dict[str, Any] | None = None
@@ -343,7 +366,7 @@ class VectorMemory:
         Semantic search for a known remediation matching the described error.
         The PATCH phase calls this before escalating to the cloud skill API.
         """
-        self._require_initialized()
+        await self._require_initialized()
         loop = asyncio.get_event_loop()
 
         fn = partial(
@@ -372,7 +395,7 @@ class VectorMemory:
         Semantic search over the installed skill index.
         Called by the Skill Acquisition pipeline before cloud lookup.
         """
-        self._require_initialized()
+        await self._require_initialized()
         loop = asyncio.get_event_loop()
 
         where: dict[str, Any] | None = None

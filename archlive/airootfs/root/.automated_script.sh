@@ -1,64 +1,44 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
-LOG=/root/yantra-bootstrap.log
-exec > >(tee -a "$LOG") 2>&1
+script_cmdline() {
+    local param
+    for param in $(</proc/cmdline); do
+        case "${param}" in
+            script=*)
+                echo "${param#*=}"
+                return 0
+                ;;
+        esac
+    done
+}
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  YantraOS First-Boot Autopilot"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+automated_script() {
+    local script rt
+    script="$(script_cmdline)"
+    if [[ -n "${script}" && ! -x /tmp/startup_script ]]; then
+        if [[ "${script}" =~ ^((http|https|ftp|tftp)://) ]]; then
+            # there's no synchronization for network availability before executing this script
+            printf '%s: waiting for network-online.target\n' "$0"
+            until systemctl --quiet is-active network-online.target; do
+                sleep 1
+            done
+            printf '%s: downloading %s\n' "$0" "${script}"
+            curl "${script}" --location --retry-connrefused --retry 10 --fail -s -o /tmp/startup_script
+            rt=$?
+        else
+            cp "${script}" /tmp/startup_script
+            rt=$?
+        fi
+        if [[ ${rt} -eq 0 ]]; then
+            chmod +x /tmp/startup_script
+            printf '%s: executing automated script\n' "$0"
+            # note that script is executed when other services (like pacman-init) may be still in progress, please
+            # synchronize to "systemctl is-system-running --wait" when your script depends on other services
+            /tmp/startup_script
+        fi
+    fi
+}
 
-# 1) Ensure NetworkManager is running
-if ! systemctl is-active --quiet NetworkManager; then
-  echo "[YANTRA] Starting NetworkManager..."
-  systemctl start NetworkManager
+if [[ $(tty) == "/dev/tty1" ]]; then
+    automated_script
 fi
-
-# 2) Network connectivity check — launch nmtui on failure
-if ! ping -c1 -W5 yantraos.com > /dev/null 2>&1; then
-  echo "[YANTRA] Network not detected. Launching nmtui for Wi-Fi configuration..."
-  nmtui || echo "[YANTRA] nmtui exited — continuing boot sequence."
-fi
-
-# 3) Ping the telemetry endpoint
-echo "[YANTRA] Pinging telemetry health endpoint..."
-if curl -fsSL https://yantraos.com/api/health > /dev/null 2>&1; then
-  echo "[YANTRA] Telemetry endpoint OK — cloud inference available."
-else
-  echo "[YANTRA] Telemetry endpoint unreachable — offline mode."
-fi
-
-# 4) Wake up Docker Sandbox environment
-if ! systemctl is-active --quiet docker; then
-  echo "[YANTRA] Waking up Docker Sandbox environment..."
-  systemctl start docker
-fi
-
-# 5) Enable and start Kriya Loop
-if ! systemctl is-enabled --quiet yantra.service; then
-  echo "[YANTRA] Enabling yantra.service..."
-  systemctl enable yantra.service
-fi
-
-echo "[YANTRA] Starting Kriya Loop daemon..."
-systemctl start yantra.service
-
-sleep 2
-systemctl --no-pager --full status yantra.service || true
-
-# 6) Hand over to Pure TUI on TTY1
-echo "[YANTRA] Launching Pure TUI for yantra_user on TTY1..."
-mkdir -p /home/yantra_user
-chown 1000:1000 /home/yantra_user
-
-if [[ -z "${DISPLAY:-}" && $(tty) == /dev/tty1 ]]; then
-    chown -R yantra_user:yantra_user /home/yantra_user
-    chmod 700 /home/yantra_user
-    chmod 666 /dev/tty1
-    chmod 777 /run/yantra
-    chmod 666 /run/yantra/ipc.sock || true
-    exec su - yantra_user -c "cd /opt/yantra && TERM=linux COLORTERM=truecolor /opt/yantra/venv/bin/python3 -m core.tui_shell < /dev/tty1 > /dev/tty1 2>&1"
-fi
-
-# 7) Disable self on next boot (live session only)
-rm -f /root/.automated_script.sh

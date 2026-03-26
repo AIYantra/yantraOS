@@ -68,7 +68,7 @@ WorkingDirectory=/opt/yantra
 # ── Environment ──────────────────────────────────────────────────────────────
 # Load API secrets from the root-owned secrets file into os.environ.
 # systemd injects these before the process starts — no disk reads at runtime.
-EnvironmentFile=-/etc/yantra/host_secrets.env
+EnvironmentFile=-/etc/yantra/secrets.env
 
 # ── Watchdog ─────────────────────────────────────────────────────────────────
 # The daemon must emit WATCHDOG=1 at least once every 30 seconds.

@@ -22,18 +22,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from core.ipc_server import push_log_event
-
 log = logging.getLogger("yantra.daemon")
-
-class IPCLogHandler(logging.Handler):
-    """Intercepts yantra.* logs and pushes them to the TUI IPC queue."""
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            msg = self.format(record)
-            push_log_event(msg)
-        except Exception:
-            self.handleError(record)
 
 
 def main() -> None:
@@ -50,11 +39,6 @@ def main() -> None:
         datefmt="%Y-%m-%dT%H:%M:%S",
         stream=sys.stdout,
     )
-
-    # Attach IPC interceptor to the root yantra logger
-    ipc_handler = IPCLogHandler()
-    ipc_handler.setFormatter(logging.Formatter("%(message)s"))
-    logging.getLogger("yantra").addHandler(ipc_handler)
 
     log.info("> DAEMON: YantraOS daemon starting...")
 

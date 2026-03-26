@@ -803,8 +803,8 @@ class SandboxEngine:
                 outcome=ExecOutcome.FAILURE,
                 exit_code=exc.exit_status,
                 stdout=(
-                    exc.output.decode("utf-8", errors="replace")
-                    if exc.output else ""
+                    exc.stderr.decode("utf-8", errors="replace")
+                    if exc.stderr else ""
                 ),
                 stderr=stderr_text,
                 duration_secs=round(elapsed, 3),

@@ -21,7 +21,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Arch%20Linux%20%7C%20Bare%20Metal-1793D1?style=for-the-badge&logo=archlinux&logoColor=white)](https://archlinux.org)
 [![Engine](https://img.shields.io/badge/Engine-Python%203.12%20%7C%20Asyncio-FFD700?style=for-the-badge&logo=python&logoColor=000000)](https://python.org)
 [![UI](https://img.shields.io/badge/Interface-Pure%20TUI%20%7C%20Textual-0057FF?style=for-the-badge&logo=gnometerminal&logoColor=white)]()
-[![Status](https://img.shields.io/badge/Status-Phase%202%20Alpha%20%7C%20RC4%20Gold%20Master-00FF41?style=for-the-badge)]()
+[![Status](https://img.shields.io/badge/Status-Phase%203%20%7C%20RC9%20Production%20Finalization-00FF41?style=for-the-badge)]()
 [![IPC](https://img.shields.io/badge/IPC-UNIX%20Domain%20Socket-00FF41?style=for-the-badge&logo=linux&logoColor=000000)]()
 
 <br/>
@@ -407,10 +407,10 @@ python3 -m core.tui_shell
 
 ---
 
-## `12` · CURRENT STATE · MILESTONE 9 — PHASE 2 ALPHA / RC4 ★
+## `12` · CURRENT STATE · MILESTONE 11 — PHASE 3 (RC9) PRODUCTION ★
 
-```
-  MILESTONE TRACKER                              ▸ RC4 · BARE-METAL CONFIRMED ✓
+```text
+  MILESTONE TRACKER                              ▸ RC9 · BARE-METAL & AUTONOMY VERIFIED ✓
   ════════════════════════════════════════════════════════════════════════════════
 
   [✓] Core Daemon orchestration loop (Kriya ∞)
@@ -449,6 +449,18 @@ python3 -m core.tui_shell
   [✓] Multi-node fleet management (Alpha + Edge topology)
   [✓] Full end-to-end LLM → Docker → SSH → Host test (Kriya Loop Audit)
   [✓] NVIDIA driver injection on live ISO (Nouveau Killswitch)
+
+  ── PHASE 3 (RC9) PRODUCTION FINALIZATION ─────────★───────────────────────────
+  [✓] Model Downscale: LLAMA_3_8B_Q4 migration for Edge hardware optimization
+  [✓] Graceful Cloud Failure: Fallback to LOCAL_ONLY on AuthenticationError
+  [✓] WebHUD WebSocket Sync: Explicit Uvicorn port=50000 / host="0.0.0.0" bind
+  [✓] Secure API Gateway: yantraos.com @ai-sdk/google telemetry bridging
+
+  ── RC6 BARE-METAL & INSTALLER STABILITY ──────────────────────────────────────
+  [✓] Installer Atomic Commit: Strict BTRFS sync & umount -R /mnt logic
+  [✓] Kriya Sandbox Upgrades: Host-fallback execution cascades for Web payload
+  [✓] Cognitive Ignition Sequence: Gemini API Key injection, IPC bridge valid
+  [✓] IPC Server Hardening: FastAPI Union return type crash resolutions
 
   ── ROADMAP ───────────────────────────────────────────────────────────────────
   [ ] Multi-GPU inference routing
