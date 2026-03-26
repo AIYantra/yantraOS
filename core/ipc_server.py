@@ -1,22 +1,15 @@
 """
-YantraOS — UNIX Domain Socket IPC Server
+YantraOS — Web Dashboard Server (formerly IPC Server)
 Target: /opt/yantra/core/ipc_server.py
-Milestone 2, Task 2.1
+Milestone 3, Phase 3 Integration
 
-Exposes a FastAPI ASGI application bound exclusively to a UDS node at
-/run/yantra/ipc.sock. The socket is created and chmod'd to 0o660
-immediately after uvicorn initialization to enforce the yantra_daemon:yantra
-ownership boundary established in Milestone 1 (tmpfiles.d).
-
-Consumers of this server (e.g., the Yantra Shell TUI via bridge.py) connect
-via the UDS path — no TCP port is exposed, eliminating the entire remote
-network attack surface for IPC.
+Exposes a FastAPI ASGI application serving the new Web Dashboard
+on port 50000. It replaces the legacy UDS socket TUI bridge.
 
 Key invariants:
-  • Stale socket cleanup before bind (idempotent restarts)
-  • chmod 0o660 after bind (restricts to yantra group)
-  • All endpoints return structured JSON for TUI consumption
-  • /stream endpoint is a Server-Sent Events stream for ThoughtStream widget
+  • GET / serves core/web/index.html
+  • WS /stream serves real-time telemetry and Kriya Loop logs
+  • Broadcaster background tasks pump state to all connected clients
 """
 
 from __future__ import annotations
@@ -25,94 +18,95 @@ import asyncio
 import json
 import logging
 import os
-import stat
 import time
+import pathlib
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+from core.ota_manager import OTAManager, OTAUpdateError
+
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 
 log = logging.getLogger("yantra.ipc_server")
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-
-UDS_PATH: str = "/run/yantra/ipc.sock"
-# 0o660: yantra_daemon rw, yantra group rw, world none.
-# Matches the 0770 directory mask from tmpfiles.d — the socket itself is
-# tighter because only group-level readability is required for the TUI.
-UDS_CHMOD: int = 0o666
-
 # ── Shared state reference (injected by engine.py at startup) ─────────────────
-# The engine calls `set_state_ref(state)` after constructing KriyaState so
-# that the IPC server can serve live telemetry without copying or locking.
 _state_ref: object | None = None
-_log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=512)
+_active_streaming_queues: set[asyncio.Queue[str]] = set()
 
 
 def set_state_ref(state: object) -> None:
-    """Inject a live KriyaState reference into the IPC server module."""
+    """Inject a live KriyaState reference into the web server module."""
     global _state_ref
     _state_ref = state
-    log.info("> IPC: State reference registered.")
+    log.info("> WEB: State reference registered.")
 
 
 def push_log_event(message: str) -> None:
     """
     Non-blocking enqueue of a log line for SSE streaming.
-    Drops the oldest entry if the queue is full to avoid back-pressure
-    on the daemon's main loop.
+    Drops the oldest entry if the queue is full.
     """
-    try:
-        _log_queue.put_nowait(message)
-    except asyncio.QueueFull:
+    payload = json.dumps({"type": "log", "message": message})
+    for q in list(_active_streaming_queues):
         try:
-            _log_queue.get_nowait()  # Evict oldest
-        except asyncio.QueueEmpty:
-            pass
-        _log_queue.put_nowait(message)
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            try:
+                q.get_nowait()  # Evict oldest
+            except asyncio.QueueEmpty:
+                pass
+            q.put_nowait(payload)
+
+
+# ── Background Broadcasters ───────────────────────────────────────────────────
+
+async def _broadcast_telemetry() -> None:
+    while True:
+        try:
+            await asyncio.sleep(2.0)
+            if _state_ref and _active_streaming_queues:
+                vram_used = getattr(_state_ref, "vram_used_gb", 0.0)
+                vram_total = getattr(_state_ref, "vram_total_gb", 1.0)
+                if vram_total == 0:
+                    vram_total = 1.0
+                vram_pct = (vram_used / vram_total) * 100.0
+                cpu_pct = getattr(_state_ref, "cpu_pct", 0.0)
+                
+                payload_obj = {
+                    "type": "telemetry",
+                    "cpu_pct": round(cpu_pct, 1),
+                    "vram_pct": round(vram_pct, 1)
+                }
+                payload_str = json.dumps(payload_obj)
+                for q in list(_active_streaming_queues):
+                    try:
+                        q.put_nowait(payload_str)
+                    except asyncio.QueueFull:
+                        pass
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.warning(f"> WEB: Error broadcasting telemetry: {e}")
+            await asyncio.sleep(1)
 
 
 # ── FastAPI App ───────────────────────────────────────────────────────────────
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Apply socket permissions immediately after uvicorn creates the file."""
-    # At this point uvicorn has initialized but the socket file might not
-    # be physically present on the filesystem yet due to async race conditions.
-    # We start a background task to enforce permissions once it appears,
-    # because blocking here would prevent uvicorn from actually binding to it.
-    async def set_permissions() -> None:
-        for _ in range(500):
-            if os.path.exists(UDS_PATH):
-                os.chmod(UDS_PATH, UDS_CHMOD)
-                log.info(
-                    f"> IPC: Socket permissions set — {UDS_PATH} "
-                    f"[{oct(UDS_CHMOD)}] (yantra_daemon:yantra rw)"
-                )
-                break
-            await asyncio.sleep(0.1)
-        else:
-            log.error("IPC Socket failed to bind within timeout")
-
-    task = asyncio.create_task(set_permissions())
+    """Launch and teardown background broadcasters."""
+    bg_telemetry = asyncio.create_task(_broadcast_telemetry())
     yield
-    # Cleanup on shutdown
-    if os.path.exists(UDS_PATH):
-        try:
-            os.unlink(UDS_PATH)
-            log.info(f"> IPC: Socket removed on graceful shutdown: {UDS_PATH}")
-        except OSError as exc:
-            log.warning(f"> IPC: Could not remove socket on shutdown: {exc}")
+    bg_telemetry.cancel()
 
 
 app = FastAPI(
-    title="YantraOS IPC Server",
-    description="Internal UNIX Domain Socket API for Kriya Loop ↔ TUI communication.",
-    version="2.0.0",
-    docs_url=None,   # Disable Swagger — not a public API
+    title="YantraOS Web Dashboard Server",
+    description="Internal server for Kriya Loop web dashboard.",
+    version="3.0.0",
+    docs_url=None,
     redoc_url=None,
     lifespan=lifespan,
 )
@@ -120,24 +114,27 @@ app = FastAPI(
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@app.get("/")
+async def serve_dashboard():
+    """Serve the local web dashboard HTML."""
+    index_path = pathlib.Path(__file__).parent / "web" / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return JSONResponse({"error": "Dashboard not found"}, status_code=404)
+
 
 @app.get("/health")
-async def health() -> JSONResponse:
-    """Liveness check. Returns daemon status and uptime."""
+async def health():
     return JSONResponse({
         "status": "ACTIVE",
         "daemon": "yantra_daemon",
-        "socket": UDS_PATH,
         "timestamp": time.time(),
     })
 
 
 @app.get("/telemetry")
-async def telemetry() -> JSONResponse:
-    """
-    Return the current KriyaState snapshot as structured JSON.
-    The TUI polls this endpoint every 2 seconds for the GPUHealth widget.
-    """
+async def telemetry():
+    """Current KriyaState snapshot as JSON."""
     if _state_ref is None:
         return JSONResponse({"error": "State not initialized"}, status_code=503)
 
@@ -153,24 +150,13 @@ async def telemetry() -> JSONResponse:
         "disk_free_gb": round(getattr(s, "disk_free_gb", 0.0), 2),
         "active_model": getattr(s, "active_model", "unknown"),
         "inference_routing": getattr(s, "inference_routing", "LOCAL"),
-        "log_tail": list(getattr(s, "log_tail", []))[-30:],
         "timestamp": time.time(),
     })
 
 
 @app.post("/command")
-async def command(request: Request) -> JSONResponse:
-    """
-    Accept a JSON command from the TUI and dispatch it.
-
-    Supported actions:
-      • {"action": "shutdown"}    — request graceful daemon shutdown
-      • {"action": "ping"}        — roundtrip latency check
-      • {"action": "get_phase"}   — return current Kriya phase name
-      • {"action": "pause"}       — pause the Kriya Loop
-      • {"action": "resume"}      — resume the Kriya Loop
-      • {"action": "inject", "payload": "..."}  — inject a thought/command
-    """
+async def command(request: Request):
+    """Accept a JSON command and dispatch it (e.g. inject thoughts)."""
     try:
         body = await request.json()
     except Exception:
@@ -188,19 +174,19 @@ async def command(request: Request) -> JSONResponse:
     if action == "shutdown":
         if _state_ref is not None:
             _state_ref.shutdown_requested = True  # type: ignore[attr-defined]
-            log.info("> IPC: Shutdown requested via /command endpoint.")
+            log.info("> WEB: Shutdown requested via /command endpoint.")
         return JSONResponse({"status": "shutdown_requested"})
 
     if action == "pause":
         if _state_ref is not None:
             _state_ref.is_paused = True  # type: ignore[attr-defined]
-            log.info("> IPC: Kriya Loop PAUSED via /command endpoint.")
+            log.info("> WEB: Kriya Loop PAUSED via /command endpoint.")
         return JSONResponse({"status": "paused"})
 
     if action == "resume":
         if _state_ref is not None:
             _state_ref.is_paused = False  # type: ignore[attr-defined]
-            log.info("> IPC: Kriya Loop RESUMED via /command endpoint.")
+            log.info("> WEB: Kriya Loop RESUMED via /command endpoint.")
         return JSONResponse({"status": "resumed"})
 
     if action == "inject":
@@ -212,7 +198,7 @@ async def command(request: Request) -> JSONResponse:
             )
         if _state_ref is not None:
             _state_ref.injected_thoughts.append(payload)  # type: ignore[attr-defined]
-            log.info(f"> IPC: Injected thought — {payload!r}")
+            log.info(f"> WEB: Injected thought — {payload!r}")
         return JSONResponse({"status": "injected", "payload": payload})
 
     if action == "set_model":
@@ -220,111 +206,84 @@ async def command(request: Request) -> JSONResponse:
         model = body.get("model", "")
         if not route or not model:
             return JSONResponse(
-                {"error": "set_model requires non-empty 'route' and 'model' fields"},
+                {"error": "set_model requires non-empty 'route' and 'model'"},
                 status_code=400,
             )
         if _state_ref is not None:
             _state_ref.active_model      = model        # type: ignore[attr-defined]
             _state_ref.inference_routing = route        # type: ignore[attr-defined]
-            log.info(f"> IPC: Model changed — route={route!r}, model={model!r}")
         return JSONResponse({"status": "model_set", "route": route, "model": model})
+
+    if action == "SYSTEM_OTA_UPDATE":
+        try:
+            start_time = time.time()
+            output = await OTAManager.trigger_system_update()
+            execution_time = time.time() - start_time
+            return JSONResponse({
+                "status": "success",
+                "execution_time_seconds": round(execution_time, 2),
+                "output": output
+            })
+        except OTAUpdateError as e:
+            execution_time = time.time() - start_time
+            return JSONResponse({
+                "status": "failed",
+                "execution_time_seconds": round(execution_time, 2),
+                "output": e.stderr_trace,
+                "error": str(e)
+            }, status_code=500)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
 
     return JSONResponse({"error": f"Unknown action: '{action}'"}, status_code=400)
 
 
 @app.get("/stream")
-async def stream() -> StreamingResponse:
+async def stream(request: Request) -> StreamingResponse:
     """
-    Server-Sent Events endpoint for the TUI ThoughtStream widget.
-    Streams log lines from the shared queue as they are produced by the
-    Kriya Loop, with a 15s keepalive ping to prevent proxy timeouts.
+    SSE endpoint for the local web dashboard and TUI.
+    Yields continuous telemetry and log broadcasts.
     """
-    async def event_generator() -> AsyncIterator[str]:
-        keepalive_interval = 15.0
-        last_ping = time.monotonic()
+    async def event_generator():
+        q: asyncio.Queue[str] = asyncio.Queue(maxsize=512)
+        _active_streaming_queues.add(q)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(q.get(), timeout=1.0)
+                    yield f"data: {payload}\n\n"
+                except asyncio.TimeoutError:
+                    # Keep-alive ping to prevent connection drops
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            _active_streaming_queues.discard(q)
 
-        while True:
-            try:
-                # Wait up to 1s for a new log event
-                message = await asyncio.wait_for(
-                    _log_queue.get(), timeout=1.0
-                )
-                yield f"data: {json.dumps({'log': message})}\n\n"
-            except asyncio.TimeoutError:
-                pass
-
-            # Emit keepalive comment to prevent SSE connection drop
-            if time.monotonic() - last_ping >= keepalive_interval:
-                yield ": keepalive\n\n"
-                last_ping = time.monotonic()
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # ── Server Bootstrap ──────────────────────────────────────────────────────────
 
-
-def _cleanup_stale_socket(uds_path: str) -> None:
-    """
-    Remove a stale socket file if it exists.
-
-    A stale socket is left behind when the daemon is killed (SIGKILL) rather
-    than stopped gracefully. Without this cleanup, uvicorn raises
-    [Errno 98] Address already in use on the next start.
-    """
-    if os.path.exists(uds_path):
-        try:
-            file_stat = os.stat(uds_path)
-            if stat.S_ISSOCK(file_stat.st_mode):
-                os.unlink(uds_path)
-                log.warning(
-                    f"> IPC: Removed stale socket at {uds_path} "
-                    "(previous process did not shut down cleanly)"
-                )
-            else:
-                raise RuntimeError(
-                    f"Path {uds_path} exists but is not a socket "
-                    f"(mode={oct(file_stat.st_mode)}). Manual intervention required."
-                )
-        except PermissionError as exc:
-            raise RuntimeError(
-                f"Cannot remove stale socket {uds_path}: {exc}. "
-                "Check that yantra_daemon owns the socket."
-            ) from exc
-
-
 async def serve() -> None:
     """
-    Async entry point. Call this from the Kriya Loop engine as a background task:
-
-        asyncio.create_task(ipc_server.serve())
-
-    The server binds exclusively to the UDS path. No TCP interface is created.
-    Socket permissions are enforced inside the FastAPI lifespan context.
+    Async entry point. Call this from the Kriya Loop engine as a background task.
+    Binds to 0.0.0.0:50000 to dynamically serve the Web Dashboard.
     """
-    _cleanup_stale_socket(UDS_PATH)
-
     config = uvicorn.Config(
         app=app,
-        uds=UDS_PATH,
-        log_level="warning",       # Suppress uvicorn access logs in journal
+        host="0.0.0.0",
+        port=50000,
+        log_level="warning",  # Suppress uvicorn access logs in journal
         access_log=False,
         loop="asyncio",
         lifespan="on",
     )
     server = uvicorn.Server(config)
-    log.info(f"> IPC: UDS server starting — binding to {UDS_PATH}")
+    log.info("> WEB: Dashboard server starting — binding to 0.0.0.0:50000")
     await server.serve()
-
-
-# ── Standalone entrypoint (for testing) ──────────────────────────────────────
 
 
 if __name__ == "__main__":
