@@ -4,3 +4,5 @@ __pycache__/
 host_secrets.env
 archlive/out/
 _architect_vault/
+*.env
+secrets.env

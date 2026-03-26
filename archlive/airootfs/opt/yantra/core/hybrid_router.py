@@ -173,7 +173,7 @@ def _build_router() -> Any:
             "model_name": "gemini/flash",
             "litellm_params": {
                 "model": "gemini/gemini-2.5-flash",
-                "api_key": os.environ.get("GEMINI_API_KEY", "[REDACTED_GCP_KEY]"),
+                "api_key": os.environ.get("GEMINI_API_KEY", "your-api-key-here"),
                 "timeout": _CLOUD_REQUEST_TIMEOUT_SECS,
                 "stream": True,
             },
