@@ -7,7 +7,7 @@
 ╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝╚══════╝╚══════╝
 
          TRANSMISSION // RELEASE MANIFEST
-         CLASSIFICATION: GOLDEN MASTER // PRE-ALPHA
+         CLASSIFICATION: PRE-ALPHA // v1.0
          ARTIFACT: YantraOS-v1.0-alpha-x86_64.iso
          COMPILED: 2026-03-27T00:00:00Z
          NODE: alpha-01 // The Karma Yogi Awakens
@@ -15,7 +15,7 @@
 
 ---
 
-# YANTRAOS v1.0 ALPHA — GOLDEN MASTER RELEASE MANIFEST
+# YANTRAOS v1.0 ALPHA — RELEASE MANIFEST
 
 > *"यन्त्र"* — Sanskrit: A geometric instrument of divine computation.
 > A structured pathway through which consciousness operates on matter.
@@ -54,7 +54,7 @@ YantraOS v1.0 Alpha is the **world's first Level 3 Autonomous Agent Operating Sy
 
 It does not wait for your input. It does not sleep. It monitors. It decides. It acts.
 
-This Golden Master ISO represents the culmination of a complete four-phase development cycle:
+This release represents the culmination of a complete four-phase development cycle:
 
 | Phase | Codename | Status |
 |:------|:---------|:------:|
@@ -112,9 +112,9 @@ OTA Manager         systemd + pacman hooks        Autonomous self-update
 
 ---
 
-## `[03]` — THE GOLDEN MASTER ARTIFACT
+## `[03]` — THE RELEASE ARTIFACT
 
-The compiled ISO exceeded GitHub's 2 GB file size limit at **2.4 GB**. The Golden Master was therefore subjected to a **Split Protocol**, dividing the artifact into three sequential binary segments for distribution integrity.
+The compiled ISO exceeded GitHub's 2 GB file size limit at **2.4 GB**. The artifact was therefore subjected to a **Split Protocol**, dividing it into three sequential binary segments for distribution integrity.
 
 ```
 ARTIFACT REGISTRY
@@ -150,7 +150,7 @@ ls -lh YantraOS-v1.0-alpha-x86_64.iso.part*
 # Expected: partaa  partab  partac
 ```
 
-**Step 2 — Concatenate segments into the Golden Master ISO:**
+**Step 2 — Concatenate segments into the release ISO:**
 
 ```bash
 cat YantraOS-v1.0-alpha-x86_64.iso.part* > YantraOS-v1.0-alpha-x86_64.iso
@@ -305,7 +305,7 @@ STATUS      COMPONENT
 ║                                                                      ║
 ║  Project:    YantraOS                                                ║
 ║  Codename:   The Karma Yogi                                          ║
-║  Version:    v1.0.0-alpha (Golden Master)                            ║
+║  Version:    v1.0.0-alpha                                            ║
 ║  Build Date: 2026-03-27                                              ║
 ║  Target:     x86_64 bare-metal / QEMU                               ║
 ║  License:    MIT                                                     ║
