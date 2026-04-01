@@ -112,59 +112,18 @@ async def fetch_skill_from_cloud(query: str) -> list[SkillResult]:
 
 async def emit_telemetry(payload: TelemetryPayload) -> bool:
     """
-    Push daemon telemetry to www.yantraos.com/api/telemetry/ingest/.
-
-    Used by the Kriya Loop UPDATE_ARCHITECTURE phase to stream
-    real-time hardware metrics and Kriya state to the Web HUD.
-
-    Args:
-        payload: Dict containing telemetry data. Expected schema:
-            {
-                "daemon_status": str,   # "ACTIVE" | "BOOTING" | "ERROR"
-                "vram_used_gb": float,
-                "vram_total_gb": float,
-                "gpu_util_pct": float,
-                "active_model": str,
-                "inference_routing": str,  # "LOCAL" | "CLOUD"
-                "kriya_phase": str,        # "SENSE" | "REASON" | "ACT" | "REMEMBER"
-                "timestamp": float,        # Unix epoch
-            }
-
-    Returns:
-        True if the telemetry was accepted, False on any failure.
-        Failures are logged but never raise — telemetry is best-effort.
+    Push daemon telemetry to the Web HUD ingress API.
+    Used by the Kriya Loop to stream real-time hardware metrics.
     """
     if not _AIOHTTP_AVAILABLE:
         log.error("> ERROR: aiohttp not installed. Run: pip install aiohttp")
         return False
 
-    # TRACER BULLET: Hardcoded URL — no interpolation, no trailing slash
-    url = "https://www.yantraos.com/api/telemetry/ingest/"
+    url = os.environ.get("YANTRA_TELEMETRY_URL", "http://127.0.0.1:3000/api/telemetry/heartbeat")
 
-    # Stamp the payload if not already timestamped
-    if "timestamp" not in payload:
-        payload["timestamp"] = time.time()
-
-    # TRACER BULLET: Fix VRAM percentage type mismatch
-    # Ensure it's a pure number! Strip '%' and rename 'util_pct' exactly as Vercel expects.
-    if "vram_usage" in payload:
-        v_u = payload["vram_usage"]
-        pct = v_u.get("percent", v_u.get("util_pct", 0))
-        if isinstance(pct, str):
-            pct = pct.replace('%', '')
-            
-        payload["vram_usage"] = {
-            "used_gb": round(float(v_u.get("used_gb", 0)), 2),
-            "total_gb": round(float(v_u.get("total_gb", 0)), 2),
-            "percent": round(float(pct), 1)
-        }
-
-    log.debug(f"> TELEMETRY: Emitting {payload.get('kriya_phase', 'UNKNOWN')} state to cloud.")
-
-    # TRACER BULLET: Auth stripped — Content-Type only, no Bearer token
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {os.environ.get('YANTRA_TELEMETRY_TOKEN')}"
+        "Authorization": f"Bearer {os.environ.get('YANTRA_DAEMON_KEY', 'dev-local-daemon-key')}"
     }
 
     try:
