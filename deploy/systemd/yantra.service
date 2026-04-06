@@ -4,7 +4,7 @@
 # Milestone 5, Task 5.1
 #
 # Type=notify pauses systemd's dependency chain until the Python daemon
-# explicitly emits READY=1 via sd_notify(). This guarantees that all
+# explicitly emits readiness via sd_notify(). This guarantees that all
 # subsystems (IPC server, vector memory, Docker sandbox) are initialized
 # before any dependent unit considers yantrad "started".
 #
@@ -57,7 +57,7 @@ RuntimeDirectoryMode=0755
 User=yantra_daemon
 Group=yantra
 ExecStart=/opt/yantra/venv/bin/python3 /opt/yantra/core/daemon.py
-Environment=PYTHONPATH=/opt/yantra
+Environment="PYTHONPATH=/opt/yantra" "ANONYMIZED_TELEMETRY=False"
 Environment="HOME=/tmp"
 Environment="XDG_CACHE_HOME=/tmp/.cache"
 Environment=HF_HOME=/var/lib/yantra/cache
