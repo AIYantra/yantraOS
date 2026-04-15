@@ -476,14 +476,18 @@ class KriyaLoopEngine:
 
         # ── Deterministic heuristic fallback ───────────────────────────
         # Always evaluate heuristics if LLM produced zero actions.
+        # DISK THRESHOLD CALIBRATION:
+        #   Live USB (tmpfs/squashfs RAM-disk): 0.5 GB (500 MB) is CRITICAL.
+        #   Persistent install: 5.0 GB is the warning threshold.
+        #   7+ GB free on RAM-disk is MASSIVE headroom — never flag it.
         if not self._state.pending_actions:
-            is_live_usb = not os.path.exists("/opt/yantra")
-            disk_threshold = 2.0 if is_live_usb else 5.0
+            is_live_usb = os.path.exists("/run/archiso")
+            disk_threshold = 0.5 if is_live_usb else 5.0
             
             if self._state.disk_free_gb < disk_threshold:
                 self._state.pending_actions.append({
                     "type": "cleanup",
-                    "reason": f"Critically low disk free space detected ({self._state.disk_free_gb:.1f} GB). Initiating aggressive cleanup.",
+                    "reason": f"Disk free space critically low ({self._state.disk_free_gb:.1f} GB < {disk_threshold} GB threshold). Initiating cleanup.",
                     "priority": "HIGH",
                 })
             if self._state.vram_used_gb > 0 and (

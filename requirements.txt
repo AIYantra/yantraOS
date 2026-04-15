@@ -4,7 +4,7 @@
 # Core Daemon
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
-litellm @ git+https://github.com/BerriAI/litellm.git
+litellm @ git+https://github.com/BerriAI/litellm.git@d319cd8cc6ecb64d3a0ac3939858a9b91f44281b
 chromadb>=0.5.0
 sdnotify>=0.3.0
 pynvml>=12.0.0

@@ -23,6 +23,10 @@ except ImportError:
 
 NODES_INVENTORY = Path("/opt/yantra/config/nodes.json")
 
+# SSH known_hosts file — NEVER set to None (MITM vulnerability).
+# Operators must populate this file with host keys for each fleet node.
+KNOWN_HOSTS_FILE = Path("/opt/yantra/config/known_hosts")
+
 # The absolute maximum time an SSH session may take
 SSH_TIMEOUT_SEC = 15.0
 
@@ -125,42 +129,50 @@ async def query_node_telemetry(ip: str, command: str) -> Tuple[bool, str]:
     if not key_file.exists():
         return False, f"ERROR: SSH Key {key_file} not found for node {ip}."
 
+    # ── Resolve known_hosts policy ─────────────────────────────────────
+    # SECURITY: Never set known_hosts=None — that disables host key
+    # verification entirely, enabling trivial MITM attacks.
+    known_hosts_arg: Any = str(KNOWN_HOSTS_FILE) if KNOWN_HOSTS_FILE.exists() else ()
+    if not KNOWN_HOSTS_FILE.exists():
+        print(
+            f"SECURITY WARNING: {KNOWN_HOSTS_FILE} not found. "
+            "SSH connections will REJECT unknown hosts. Populate this file "
+            "with host keys for each fleet node.",
+            file=sys.stderr,
+        )
+
     try:
-        async def _connect_and_run() -> Tuple[bool, str]:
-            async with asyncssh.connect(
-                node.ip,
-                username=node.username,
-                client_keys=[str(key_file)],
-                known_hosts=None, 
-                timeout=5.0
-            ) as conn:
-                result = await asyncio.wait_for(
-                    conn.run(command, check=False),
-                    timeout=SSH_TIMEOUT_SEC
-                )
-                
-                if result.exit_status == 0:
-                    out = result.stdout.strip() if isinstance(result.stdout, str) else "[NO STDOUT]"
-                    if not out: out = "[NO STDOUT]"
-                    return True, out
-                else:
-                    err = result.stderr.strip() if isinstance(result.stderr, str) else "[NO STDERR]"
-                    if not err or err == "[NO STDERR]": 
-                        err = result.stdout.strip() if isinstance(result.stdout, str) else "[NO STDOUT]"
-                    return False, f"Remote execution failed (exit {result.exit_status}):\n{err}"
-            return False, "UNKNOWN SSH ERROR"
-        return await asyncio.wait_for(_connect_and_run(), timeout=7.0)
+        async with asyncssh.connect(
+            node.ip,
+            username=node.username,
+            client_keys=[str(key_file)],
+            known_hosts=known_hosts_arg,
+            connect_timeout=5,
+        ) as conn:
+            result = await asyncio.wait_for(
+                conn.run(command, check=False),
+                timeout=SSH_TIMEOUT_SEC,
+            )
+
+            if result.exit_status == 0:
+                out = result.stdout.strip() if isinstance(result.stdout, str) else "[NO STDOUT]"
+                if not out:
+                    out = "[NO STDOUT]"
+                return True, out
+            else:
+                err = result.stderr.strip() if isinstance(result.stderr, str) else "[NO STDERR]"
+                if not err or err == "[NO STDERR]":
+                    err = result.stdout.strip() if isinstance(result.stdout, str) else "[NO STDOUT]"
+                return False, f"Remote execution failed (exit {result.exit_status}):\n{err}"
 
     except asyncio.TimeoutError:
         error_payload = json.dumps({
             "error": "TimeoutError",
             "message": "Edge node is degraded or unreachable.",
-            "node_ip": ip
+            "node_ip": ip,
         })
         return False, error_payload
     except asyncssh.Error as exc:
         return False, f"SSH ERROR: {exc}"
     except Exception as exc:
         return False, f"INTERNAL ERROR: {exc}"
-    
-    return False, "UNEXPECTED TERMINATION"

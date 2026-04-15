@@ -195,8 +195,11 @@ if [[ -f "${YANTRA_SRC}/requirements.txt" ]]; then
 fi
 
 log_info "Downloading LiteLLM offline cost map backup..."
-wget -q "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json" \
-    -O "${VENV_BUILD}/lib/python3.14/site-packages/litellm/model_prices_and_context_window_backup.json" || true
+LITELLM_DIR=$(find "${VENV_BUILD}/lib" -type d -name "litellm" | grep -m 1 "site-packages/litellm")
+if [[ -n "${LITELLM_DIR}" ]]; then
+    wget -q "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json" \
+        -O "${LITELLM_DIR}/model_prices_and_context_window_backup.json" || touch "${LITELLM_DIR}/model_prices_and_context_window_backup.json"
+fi
 
 deactivate
 log_ok "All Python dependencies installed into venv."
@@ -281,6 +284,29 @@ sed -i 's/[[:space:]]*$//' "${STAGED_SECRETS}"
 
 log_ok "Secrets staged to airootfs (0600, quote-stripped)."
 
+# ── Dynamic Secrets Injection (.env.secrets) ─────────────────────────────────
+HOST_ENV_SECRETS="${YANTRA_SRC}/.env.secrets"
+if [[ -f "${HOST_ENV_SECRETS}" ]]; then
+    log_info "Found .env.secrets in host repository. Generating systemd drop-in..."
+    
+    # Securely stage the injected secrets file
+    INJECTED_SECRETS="${AIROOTFS}/etc/yantra/.env.secrets"
+    install -dm700 "${AIROOTFS}/etc/yantra"
+    install -Dm600 "${HOST_ENV_SECRETS}" "${INJECTED_SECRETS}"
+    
+    # Generate EnvironmentFile directive in drop-in
+    DROPIN_DIR="${AIROOTFS}/etc/systemd/system/yantra.service.d"
+    install -dm755 "${DROPIN_DIR}"
+    cat << EOF > "${DROPIN_DIR}/env.conf"
+[Service]
+EnvironmentFile=/etc/yantra/.env.secrets
+EOF
+    # Set strict permissions on the drop-in
+    chmod 600 "${DROPIN_DIR}/env.conf"
+    
+    log_ok "Secrets injected via drop-in (EnvironmentFile). Locked to 0600."
+fi
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 5.5: AMNESIA PROTOCOL + CRLF SANITIZATION
@@ -291,8 +317,8 @@ log_info "═══ PHASE 5.5: Amnesia Protocol + CRLF Sanitization ═══"
 
 # ── Amnesia Protocol ─────────────────────────────────────────────────────────
 # Purge residual host state so the ISO boots at Iteration #1 with clean memory.
-find "${AIROOTFS}/opt/yantra/" -name "*.json" -type f -delete 2>/dev/null || true
-find "${AIROOTFS}/opt/yantra/" -name "*.pyc" -type f -delete 2>/dev/null || true
+find "${AIROOTFS}/opt/yantra/" -not -path "*/venv/*" -name "*.json" -type f -delete 2>/dev/null || true
+find "${AIROOTFS}/opt/yantra/" -not -path "*/venv/*" -name "*.pyc" -type f -delete 2>/dev/null || true
 rm -rf "${AIROOTFS}/opt/yantra/core/__pycache__" 2>/dev/null || true
 rm -rf "${AIROOTFS}/opt/yantra/__pycache__" 2>/dev/null || true
 rm -rf "${AIROOTFS}/var/lib/yantra/chromadb" 2>/dev/null || true
@@ -306,7 +332,7 @@ CRLF_COUNT=0
 
 while IFS= read -r -d '' file; do
     if file "$file" 2>/dev/null | grep -q "text"; then
-        if grep -qP '\r$' "$file" 2>/dev/null; then
+        if grep -q $'\r' "$file" 2>/dev/null; then
             sed -i 's/\r$//' "$file"
             CRLF_COUNT=$((CRLF_COUNT + 1))
         fi
@@ -356,6 +382,21 @@ log_info "═══ PHASE 5.7: Identity Matrix Scaffold ═══"
 install -dm700 "${AIROOTFS}/home/yantra_user"
 chown 1000:1000 "${AIROOTFS}/home/yantra_user"
 log_ok "Home directory created: /home/yantra_user (700, 1000:1000)."
+
+# ── 5.7.2: PAM Password Bypass (Physical Ignition) ──────────────────────
+# Explicitly delete password hashes to ensure the TTY accepts empty passwords.
+# We shadow arch-chroot behavior by injecting directly into the airootfs.
+mkdir -p "${AIROOTFS}/etc"
+# SECURITY NOTE (C6 audit): Password hashes are intentionally zeroed for
+# the LIVE USB environment only. This enables emergency physical access
+# without passwords. For production deployments, lock root with 'root:!:'
+# and enforce SSH key-only authentication.
+cat << 'EOF' > "${AIROOTFS}/etc/shadow"
+root::14871::::::
+yantra_user::14871::::::
+EOF
+chmod 0400 "${AIROOTFS}/etc/shadow"
+log_ok "Password hashes explicitly zeroed for root and yantra_user."
 
 log_ok "Identity Matrix Scaffold complete."
 

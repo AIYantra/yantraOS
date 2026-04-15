@@ -4,5 +4,15 @@ __pycache__/
 host_secrets.env
 archlive/out/
 _architect_vault/
+
+# ── Secrets (NEVER commit) ────────────────────────────
 *.env
+*.env.*
+.env.secrets
+.env.local
 secrets.env
+*.pem
+*.key
+
+# ── Build artifacts ───────────────────────────────────
+archlive/work/
