@@ -450,6 +450,14 @@ python3 -m core.tui_shell
   [✓] Docker sandbox execution path verified on bare metal
   [✓] Compile ISO hardened (6-invariant rewrite)
 
+  PHASE 5 — SYSTEM HARDENING & AI ANCHORING (COMPLETE)
+  [✓] Patched AI environmental hallucination (anchored to bare-metal USB)
+  [✓] Enforced strict IPv4 loopback constraints for IPC resiliency
+  [✓] Stateless dynamic secrets injection pipeline (systemd drop-ins)
+  [✓] Purged initramfs hooks / enforced minimal archiso + zstd compression
+  [✓] Bypassed initramfs sulogin via SYSTEMD_SULOGIN_FORCE=1
+  [✓] Autonomous dependency healing (LiteLLM cache Amnesia immunity)
+
   ONGOING
   [~] Restricted SSH whitelisted command gateway
   [ ] NVIDIA driver injection on live ISO
