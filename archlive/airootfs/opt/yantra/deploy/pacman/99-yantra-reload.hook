@@ -1,0 +1,33 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# YantraOS — Pacman Post-Transaction Daemon Reload Hook
+# Target: /etc/pacman.d/hooks/99-yantra-reload.hook
+# Milestone 5, Task 5.2
+#
+# This ALPM hook gracefully restarts the Yantra daemon after the yantra-core
+# package is upgraded via pacman. This ensures the running daemon loads the
+# updated Python code instead of continuing to execute stale bytecode in RAM.
+#
+# CRITICAL INVARIANT: try-restart (not restart)
+#   try-restart only restarts the service IF it is currently running.
+#   If an administrator has intentionally stopped the daemon for maintenance,
+#   this hook will NOT forcefully boot it back up. This is a critical fail-safe
+#   that prevents the hook from overriding intentional administrative decisions.
+#
+# The "99-" prefix ensures this hook runs AFTER all other post-transaction
+# hooks (lexicographic ordering), including the "00-" auto-snapshot hook.
+# This means the BTRFS snapshot is already created before the reload occurs.
+#
+# Operation = Upgrade only — we do NOT restart on Install (first install
+# should be followed by `systemctl enable --now yantra.service`) or Remove
+# (the service should be stopped and disabled before package removal).
+# ──────────────────────────────────────────────────────────────────────────────
+
+[Trigger]
+Operation = Upgrade
+Type = Package
+Target = yantra-core
+
+[Action]
+Description = YantraOS: Reloading daemon after package upgrade...
+When = PostTransaction
+Exec = /usr/bin/systemctl try-restart yantra.service

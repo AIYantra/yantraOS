@@ -802,7 +802,10 @@ class SandboxEngine:
             return SandboxResult(
                 outcome=ExecOutcome.FAILURE,
                 exit_code=exc.exit_status,
-                stdout="",
+                stdout=(
+                    exc.stderr.decode("utf-8", errors="replace")
+                    if exc.stderr else ""
+                ),
                 stderr=stderr_text,
                 duration_secs=round(elapsed, 3),
                 image=image,

@@ -1,0 +1,48 @@
+// /etc/polkit-1/rules.d/50-yantra-btrfs.rules
+// YantraOS — Microscopic privilege escalation corridor
+// Consumed by polkitd(8) at daemon startup and on SIGHUP.
+//
+// PURPOSE:
+//   Authorizes the yantra_daemon user to execute ONLY /usr/bin/btrfs
+//   via pkexec without an interactive password prompt.
+//   This is the sole privilege escalation vector for BTRFS operations.
+//
+// SECURITY CONSTRAINTS:
+//   • Validates requesting user identity (yantra_daemon)
+//   • Validates action identifier (org.freedesktop.policykit.exec)
+//   • Validates exact absolute binary path — NO wildcards, NO directory
+//     approvals, NO regex, NO glob patterns
+//   • Falls through to default deny for all non-matching requests
+//
+// PRIVILEGE CHAIN:
+//   yantra_daemon → pkexec → polkitd → 50-yantra-btrfs.rules → /usr/bin/btrfs
+
+polkit.addRule(function(action, subject) {
+    // Gate 1: Only intercept pkexec authorization requests.
+    if (action.id !== "org.freedesktop.policykit.exec") {
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    // Gate 2: Only authorize the yantra_daemon service account.
+    if (subject.user !== "yantra_daemon") {
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    // Gate 3: Extract the exact binary path from the pkexec request.
+    var program = action.lookup("program");
+
+    // Gate 4: Permit ONLY the single explicitly sanctioned binary.
+    //   /usr/bin/btrfs — filesystem snapshot creation, rollback, and pruning.
+    //   NO wildcards. NO additional binaries. Strict path equality only.
+    if (program === "/usr/bin/btrfs") {
+        // Log the authorized escalation for audit trail.
+        polkit.log("YantraOS: Authorized pkexec for " + program +
+                   " by user " + subject.user +
+                   " (pid=" + subject.pid + ")");
+        return polkit.Result.YES;
+    }
+
+    // Default: fall through to system-wide deny policy.
+    // Any binary not explicitly listed above is rejected.
+    return polkit.Result.NOT_HANDLED;
+});

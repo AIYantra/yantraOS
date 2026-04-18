@@ -1,0 +1,129 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# YantraOS — Kriya Loop Daemon Systemd Unit
+# Target: /etc/systemd/system/yantra.service
+# Milestone 5, Task 5.1
+#
+# Type=notify pauses systemd's dependency chain until the Python daemon
+# explicitly emits readiness via sd_notify(). This guarantees that all
+# subsystems (IPC server, vector memory, Docker sandbox) are initialized
+# before any dependent unit considers yantrad "started".
+#
+# WatchdogSec=30s — the daemon must emit WATCHDOG=1 at least once every 30s.
+# The ping is linked to phase advancement (not an independent timer), so a
+# deadlocked Kriya Loop will starve the watchdog → systemd dispatches
+# SIGABRT → auto-restart via Restart=on-failure.
+#
+# Security:
+#   User=yantra_daemon / Group=yantra — runs as the unprivileged service user
+#   provisioned by sysusers.d/yantra.conf (Milestone 1, Task 1.1).
+#   No ambient capabilities. No root. All privilege escalation routes through
+#   pkexec → polkitd → 50-yantra-btrfs.rules.
+#
+# Execution context:
+#   ExecStart uses the venv Python interpreter at /opt/yantra/venv/bin/python3
+#   to isolate all pip dependencies from the host's system Python packages.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[Unit]
+Description=YantraOS Kriya Loop Daemon — Autonomous System Orchestrator
+Documentation=https://yantraos.com/docs
+
+# ── Dependency ordering ──────────────────────────────────────────────────────
+# Wait for the network stack and Docker daemon to be available.
+# The Kriya Loop's SENSE phase probes hardware and the hybrid_router
+# may need network for cloud model fallback.
+After=network-online.target
+Wants=network-online.target
+After=local-fs.target
+
+# ── Filesystem prerequisites ─────────────────────────────────────────────────
+# Require the volatile /run/yantra directory (for UDS socket) and the
+# persistent /var/lib/yantra/chromadb directory (for ChromaDB) to exist.
+# These are created by tmpfiles.d/yantra.conf (Milestone 1, Task 1.2).
+RequiresMountsFor=/run/yantra /var/lib/yantra
+
+[Service]
+# ── Service type ─────────────────────────────────────────────────────────────
+# Type=notify: systemd waits for READY=1 before marking the unit as "active".
+# The daemon sends this after all subsystem initialization in engine.run().
+Type=notify
+
+RuntimeDirectory=yantra
+RuntimeDirectoryMode=0755
+
+# ── Execution context ────────────────────────────────────────────────────────
+# Run as the unprivileged yantra_daemon user within the yantra group.
+# The venv Python interpreter ensures pip package isolation.
+User=yantra_daemon
+Group=yantra
+ExecStart=/opt/yantra/venv/bin/python3 /opt/yantra/core/daemon.py
+Environment="PYTHONPATH=/opt/yantra" "ANONYMIZED_TELEMETRY=False"
+Environment="HOME=/tmp"
+Environment="XDG_CACHE_HOME=/tmp/.cache"
+Environment=HF_HOME=/var/lib/yantra/cache
+
+# ── Working directory ────────────────────────────────────────────────────────
+WorkingDirectory=/opt/yantra
+
+# ── Environment ──────────────────────────────────────────────────────────────
+# Load API secrets from the root-owned secrets file into os.environ.
+# systemd injects these before the process starts — no disk reads at runtime.
+EnvironmentFile=-/etc/yantra/secrets.env
+
+# ── Watchdog ─────────────────────────────────────────────────────────────────
+# The daemon must emit WATCHDOG=1 at least once every 30 seconds.
+# This is linked to successful Kriya phase advancement — if the loop
+# deadlocks, the ping ceases, and systemd kills the process.
+WatchdogSec=30s
+WatchdogSignal=SIGABRT
+
+# ── Restart policy ───────────────────────────────────────────────────────────
+# on-failure: restart only on non-zero exit, signal kill, or watchdog timeout.
+# Does NOT restart on clean exit (e.g., graceful shutdown via SIGTERM).
+Restart=on-failure
+RestartSec=5s
+
+# Limit restart attempts to prevent infinite crash loops.
+# 5 attempts within 300 seconds (5 minutes), then give up.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+# Route all output to the systemd journal for centralized log management.
+# journalctl -u yantra.service --follow
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=yantra
+
+# ── Security hardening ───────────────────────────────────────────────────────
+# Defense-in-depth: restrict the daemon's access even beyond user isolation.
+NoNewPrivileges=yes
+#ProtectSystem=strict
+#ProtectHome=yes
+#PrivateTmp=yes
+
+# Allow write access only to the specific directories the daemon needs:
+#   /run/yantra          — UDS socket for IPC
+#   /var/lib/yantra      — ChromaDB persistent storage
+#   /var/log/yantra      — Kriya Loop and thought logs
+ReadWritePaths=/run/yantra /var/lib/yantra /var/log/yantra
+
+# ── Resource limits ──────────────────────────────────────────────────────────
+# Prevent the daemon itself from consuming excessive resources.
+# The Docker sandbox has its own cgroups limits (Milestone 3).
+MemoryMax=2G
+CPUQuota=200%
+TasksMax=64
+
+# ── Timeout ──────────────────────────────────────────────────────────────────
+# Allow 90 seconds for startup (model loading, ChromaDB init, Docker pull).
+TimeoutStartSec=90
+TimeoutStopSec=30
+
+# ── Notification access ─────────────────────────────────────────────────────
+# Required for Type=notify — allows the daemon to send sd_notify messages.
+NotifyAccess=main
+
+[Install]
+# Enable the daemon to start on boot via: systemctl enable yantra.service
+WantedBy=multi-user.target

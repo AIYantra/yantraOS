@@ -118,13 +118,8 @@ async def _http_get(path: str, timeout: float = 5.0) -> dict[str, Any]:
     req = urllib.request.Request(url)
     loop = asyncio.get_event_loop()
     def _do():
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode())
-        except (ConnectionRefusedError, ConnectionResetError, OSError) as exc:
-            raise ConnectionError(
-                f"IPC Socket Dead: {IPC_BASE} refused connection — {exc}"
-            ) from exc
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
     return await loop.run_in_executor(None, _do)
 
 
@@ -138,13 +133,8 @@ async def _http_post(path: str, body: dict, timeout: float = 5.0) -> dict[str, A
     )
     loop = asyncio.get_event_loop()
     def _do():
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode())
-        except (ConnectionRefusedError, ConnectionResetError, OSError) as exc:
-            raise ConnectionError(
-                f"IPC Socket Dead: {IPC_BASE} refused connection — {exc}"
-            ) from exc
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
     return await loop.run_in_executor(None, _do)
 
 
@@ -1486,7 +1476,7 @@ class YantraShell(App):
             return
 
         if lower in ("pause", "resume"):
-            self.call_from_thread(self._ipc_send, {"action": lower})
+            self.call_from_thread(self._ipc_send, {"action": f"{lower}_loop"})
             return
 
         if lower in ("ping", "get_phase", "shutdown"):
@@ -1570,11 +1560,10 @@ class YantraShell(App):
             _apply()
             self._connected = True
 
-        except (urllib.error.URLError, ConnectionRefusedError, ConnectionError, OSError) as exc:
+        except (urllib.error.URLError, ConnectionRefusedError, OSError):
             self._connected = False
-            diag = str(exc) if str(exc) else f"IPC Socket Dead: {IPC_BASE} refused connection"
 
-            def _offline(msg=diag) -> None:
+            def _offline() -> None:
                 left.connected  = False
                 left.phase      = "[#FFB000] IPC DEGRADED ⚠[/]"
                 header.connected = False
@@ -1648,20 +1637,19 @@ class YantraShell(App):
             resp_str = json.dumps(resp, separators=(",", ":"))
 
             action = body.get("action", "")
-            if action == "pause":
+            if action == "pause_loop":
                 self._is_paused = True
                 self._sync_pause()
-            elif action == "resume":
+            elif action == "resume_loop":
                 self._is_paused = False
                 self._sync_pause()
 
             chat.write_system(f"[{ACID_GREEN}]{resp_str}[/]")
             left.update_resp(resp_str)
 
-        except (urllib.error.URLError, ConnectionRefusedError, ConnectionError, OSError) as exc:
-            diag = str(exc) if str(exc) else f"IPC Socket Dead: {IPC_BASE} refused connection"
+        except (urllib.error.URLError, ConnectionRefusedError, OSError):
             chat.write_system(
-                f"[{AMBER}]⚠  {diag} — command dropped.[/]",
+                f"[{AMBER}]⚠  Daemon not reachable — command dropped.[/]",
             )
         except Exception as exc:  # noqa: BLE001
             chat.write_system(
@@ -1685,7 +1673,7 @@ class YantraShell(App):
         self._poll_telemetry()
 
     async def action_toggle_pause(self) -> None:
-        self._ipc_send({"action": "resume" if self._is_paused else "pause"})
+        self._ipc_send({"action": "resume_loop" if self._is_paused else "pause_loop"})
 
     async def action_open_network(self) -> None:
         """Ctrl+N — push the Wi-Fi Network Manager modal."""

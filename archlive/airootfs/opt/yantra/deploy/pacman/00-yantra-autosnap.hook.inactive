@@ -1,0 +1,33 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# YantraOS — Pacman Pre-Transaction Auto-Snapshot Hook
+# Target: /etc/pacman.d/hooks/00-yantra-autosnap.hook
+# Milestone 4, Task 4.3
+#
+# This ALPM hook intercepts ALL package transactions (Install, Upgrade, Remove)
+# and creates an atomic BTRFS snapshot of the root filesystem BEFORE the
+# transaction executes. If the snapshot fails, the AbortOnFail directive
+# instructs libalpm to abort the entire transaction — no package modification
+# occurs without a valid recovery point.
+#
+# The "00-" prefix ensures this hook runs BEFORE any other hooks (lexicographic
+# ordering). The Type = "Package" with Target = "*" catches every single package
+# operation, not just specific packages.
+#
+# Security:
+#   The hook invokes /opt/yantra/core/cli.py which calls btrfs_manager.py,
+#   which delegates privilege escalation through pkexec → polkitd →
+#   50-yantra-btrfs.rules. The Python process itself has no root privileges.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = YantraOS: Creating pre-transaction BTRFS snapshot...
+When = PreTransaction
+Exec = /usr/bin/python3 /opt/yantra/core/cli.py --create-snapshot "pacman_pre"
+AbortOnFail

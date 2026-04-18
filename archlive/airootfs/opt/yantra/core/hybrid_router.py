@@ -133,7 +133,7 @@ def _build_router() -> Any:
     litellm.set_verbose = False
 
     hw_cap = detect_hardware_capability()
-    ollama_base = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    ollama_base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
     # ── Build model list (domain-isolated) ────────────────────────────────
     model_list: list[dict[str, Any]] = []
@@ -169,18 +169,13 @@ def _build_router() -> Any:
 
     model_list.extend([
         # ── Cloud Primary: Google Gemini 2.5 Flash ────────────────────────
-        # Uses Google's OpenAI-compatible endpoint for stable routing.
-        # rpm=15 declares the free-tier rate limit so LiteLLM throttles
-        # requests proactively instead of slamming 429s.
         {
             "model_name": "gemini/flash",
             "litellm_params": {
-                "model": "openai/gemini-2.5-flash",
+                "model": "gemini/gemini-2.5-flash",
                 "api_key": os.environ.get("GEMINI_API_KEY", "your-api-key-here"),
-                "api_base": "https://generativelanguage.googleapis.com/v1beta/openai/",
                 "timeout": _CLOUD_REQUEST_TIMEOUT_SECS,
                 "stream": True,
-                "rpm": 15,
             },
         },
         # ── Cloud Secondary: Anthropic Claude 3.5 Haiku ───────────────────
@@ -227,8 +222,8 @@ def _build_router() -> Any:
         routing_strategy="simple-shuffle",
         num_retries=2,
         retry_after=2,
-        allowed_fails=3,       # Tolerate brief 429 bursts before cooldown
-        cooldown_time=15,      # 15s cooldown (was 60s) — don't paralyze on transient rate limits
+        allowed_fails=1,
+        cooldown_time=60,
         cache_responses=False,
         set_verbose=False,
     )

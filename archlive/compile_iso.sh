@@ -81,6 +81,21 @@ log_ok "All build dependencies available."
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PHASE 1.5: RSYNC PARITY
+# Sync the development core into the ArchISO airootfs overlay.
+# ══════════════════════════════════════════════════════════════════════════════
+
+log_info "═══ PHASE 1.5: RSYNC PARITY ═══"
+
+if [[ -x "${YANTRA_SRC}/scripts/sync_to_iso.sh" ]]; then
+    log_info "Executing sync_to_iso.sh..."
+    bash "${YANTRA_SRC}/scripts/sync_to_iso.sh"
+else
+    log_error "FATAL: ${YANTRA_SRC}/scripts/sync_to_iso.sh not found or not executable."
+    exit 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PHASE 2: STATE CLEANSING
 # Nuke previous build artifacts to guarantee a pristine compilation matrix.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -250,15 +265,27 @@ fi
 
 log_info "═══ PHASE 5: Secrets Verification ═══"
 
-HOST_SECRETS="/etc/yantra/host_secrets.env"
+HOST_SECRETS="${YANTRA_SRC}/host_secrets.env"
 STAGED_SECRETS="${AIROOTFS}/etc/yantra/host_secrets.env"
+
+# ── Ensure host_secrets.env is not tracked! ──────────────────────────────────
+# Fail the build if git check-ignore reports an error or detects tracking
+if command -v git &>/dev/null && [[ -d "${YANTRA_SRC}/.git" ]]; then
+    if git -C "${YANTRA_SRC}" ls-files --error-unmatch "host_secrets.env" >/dev/null 2>&1; then
+        log_error "FATAL: host_secrets.env is currently tracked in Git!"
+        log_error "This is a severe security violation. Remove it from the index:"
+        log_error "  git rm --cached host_secrets.env"
+        exit 1
+    fi
+fi
 
 if [[ ! -f "${HOST_SECRETS}" ]]; then
     log_error "══════════════════════════════════════════════════════════════"
-    log_error "  FATAL: ${HOST_SECRETS} not found on build host."
+    log_error "  FATAL: ${HOST_SECRETS} not found at project root."
     log_error "  Cannot ship a brain-dead AI. Populate this file with:"
     log_error "    GEMINI_API_KEY=<your-key>"
     log_error "    YANTRA_DAEMON_KEY=<your-key>"
+    log_error "  Do NOT commit this file to Git!"
     log_error "══════════════════════════════════════════════════════════════"
     exit 1
 fi
@@ -275,6 +302,10 @@ log_ok "GEMINI_API_KEY validated (${#GEMINI_KEY} chars)."
 install -dm700 "$(dirname "${STAGED_SECRETS}")"
 install -Dm600 "${HOST_SECRETS}" "${STAGED_SECRETS}"
 
+# Enforce root:yantra ownership
+chown 0:998 "${STAGED_SECRETS}"
+chmod 0600 "${STAGED_SECRETS}"
+
 # ── Cryptographic sanitization ───────────────────────────────────────────────
 # systemd's EnvironmentFile passes quote characters literally.
 # GEMINI_API_KEY="AIza..." becomes the string '"AIza..."' including quotes,
@@ -282,30 +313,20 @@ install -Dm600 "${HOST_SECRETS}" "${STAGED_SECRETS}"
 sed -i "s/['\"]//g" "${STAGED_SECRETS}"
 sed -i 's/[[:space:]]*$//' "${STAGED_SECRETS}"
 
-log_ok "Secrets staged to airootfs (0600, quote-stripped)."
+log_ok "Secrets staged to airootfs (0600 root:yantra, quote-stripped)."
 
-# ── Dynamic Secrets Injection (.env.secrets) ─────────────────────────────────
-HOST_ENV_SECRETS="${YANTRA_SRC}/.env.secrets"
-if [[ -f "${HOST_ENV_SECRETS}" ]]; then
-    log_info "Found .env.secrets in host repository. Generating systemd drop-in..."
-    
-    # Securely stage the injected secrets file
-    INJECTED_SECRETS="${AIROOTFS}/etc/yantra/.env.secrets"
-    install -dm700 "${AIROOTFS}/etc/yantra"
-    install -Dm600 "${HOST_ENV_SECRETS}" "${INJECTED_SECRETS}"
-    
-    # Generate EnvironmentFile directive in drop-in
-    DROPIN_DIR="${AIROOTFS}/etc/systemd/system/yantra.service.d"
-    install -dm755 "${DROPIN_DIR}"
-    cat << EOF > "${DROPIN_DIR}/env.conf"
+# ── Dynamic Secrets Injection Drop-in ────────────────────────────────────────
+# Generate EnvironmentFile directive in drop-in for host_secrets.env
+DROPIN_DIR="${AIROOTFS}/etc/systemd/system/yantra.service.d"
+install -dm755 "${DROPIN_DIR}"
+cat << EOF > "${DROPIN_DIR}/env.conf"
 [Service]
-EnvironmentFile=/etc/yantra/.env.secrets
+EnvironmentFile=/etc/yantra/host_secrets.env
 EOF
-    # Set strict permissions on the drop-in
-    chmod 600 "${DROPIN_DIR}/env.conf"
-    
-    log_ok "Secrets injected via drop-in (EnvironmentFile). Locked to 0600."
-fi
+# Set strict permissions on the drop-in
+chmod 600 "${DROPIN_DIR}/env.conf"
+
+log_ok "Secrets injected via drop-in (EnvironmentFile). Locked to 0600."
 
 
 # ══════════════════════════════════════════════════════════════════════════════
