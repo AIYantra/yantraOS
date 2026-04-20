@@ -22,6 +22,8 @@ bootstrap_tarball_compression=('zstd' '-c' '-T0' '--auto-threads=logical' '--lon
 file_permissions=(
   ["/etc/shadow"]="0:0:0400"
   ["/etc/gshadow"]="0:0:0400"
+  ["/etc/initcpio/install/yantra-origin"]="0:0:0755"
+  ["/etc/initcpio/hooks/yantra-origin"]="0:0:0755"
   ["/etc/yantra/host_secrets.env"]="0:0:0600"
   ["/etc/yantra/secrets.env"]="0:0:0600"
   ["/root"]="0:0:0750"

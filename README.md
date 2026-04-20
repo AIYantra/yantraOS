@@ -27,7 +27,12 @@
 
 <br/>
 
-[**`www.yantraos.com`**](https://yantraos.com) · [**`Documentation`**](https://yantraos.gitbook.io) · [**`Roadmap`**](https://github.com/orgs/AIYantra/projects) · [**`Discord`**](https://discord.gg/your-invite-link)
+[![Open Collective Backers](https://img.shields.io/opencollective/backers/yantraos?style=for-the-badge&logo=opencollective&logoColor=ffffff&label=Backers&color=7B2FBE)](https://opencollective.com/yantraos)
+[![Open Collective Sponsors](https://img.shields.io/opencollective/sponsors/yantraos?style=for-the-badge&logo=opencollective&logoColor=ffffff&label=Sponsors&color=E040FB)](https://opencollective.com/yantraos#section-contributors)
+
+<br/>
+
+[**`www.yantraos.com`**](https://yantraos.com) · [**`Documentation`**](https://yantraos.gitbook.io) · [**`Roadmap`**](https://github.com/orgs/AIYantra/projects) · [**`Discord`**](https://discord.gg/tkg6XQBPpK)
 
 </div>
 
@@ -507,6 +512,126 @@ python3 -m core.tui_shell  # verify TUI connects to socket
 git push origin feature/your-feature
 # Open PR against main
 ```
+
+---
+
+## `14.5` · FUEL THE MACHINE ⚡
+
+<div align="center">
+
+<br/>
+
+```
+╔════════════════════════════════════════════════════════════════════╗
+║                                                                    ║
+║   YantraOS runs on bare metal.  Our infrastructure does not.       ║
+║                                                                    ║
+║   Every cycle of the Kriya Loop costs real compute.               ║
+║   Every QA test on physical hardware costs real time.             ║
+║   Every byte of open-source code costs real developer-hours.      ║
+║                                                                    ║
+║   If this project sparks something in you — fund the spark.       ║
+║                                                                    ║
+╚════════════════════════════════════════════════════════════════════╝
+```
+
+<br/>
+
+### 🌐 Open Collective · Fiscal Transparency Ledger
+
+> All funding is **100% transparent**, **publicly auditable**, and **governed by our Open Collective**.  
+> Every dollar in. Every dollar out. On-chain. In public.
+
+<br/>
+
+**[→ opencollective.com/yantraos](https://opencollective.com/yantraos)**
+
+<br/>
+
+---
+
+### 🏛️ Where Your Capital Flows
+
+<br/>
+
+| 🔧 Infrastructure Matrix | 🖥️ Bare-Metal QA Lab | 👨‍💻 Core Developer Stipends |
+|:---:|:---:|:---:|
+| Cloud telemetry relay nodes, Supabase fleet DB, Vercel edge functions, Pinecone semantic index | Physical x86 test rigs, GPU validation hardware, network switches, KVM-over-IP units | Stipends for contributors maintaining the Kriya Loop, IPC bridge, and ISO build pipeline |
+
+<br/>
+
+---
+
+### 🥇 Sponsors
+
+*The organizations and individuals powering the Infrastructure Matrix.*
+
+<br/>
+
+[![Become a Sponsor](https://opencollective.com/yantraos/tiers/sponsors.svg?avatarHeight=80&width=800)](https://opencollective.com/yantraos#section-contributors)
+
+<br/>
+
+<a href="https://opencollective.com/yantraos#section-contributors">
+  <img src="https://img.shields.io/opencollective/sponsors/yantraos?style=for-the-badge&logo=opencollective&logoColor=white&label=%E2%9A%A1%20Active%20Sponsors&color=7B2FBE" alt="Sponsors"/>
+</a>
+
+<br/><br/>
+
+**[🚀 Become a Sponsor →](https://opencollective.com/yantraos)**
+
+<br/>
+
+---
+
+### 🤝 Backers
+
+*The community backbone keeping the Kriya Loop alive.*
+
+<br/>
+
+[![Become a Backer](https://opencollective.com/yantraos/tiers/backers.svg?avatarHeight=60&width=800)](https://opencollective.com/yantraos#section-contributors)
+
+<br/>
+
+<a href="https://opencollective.com/yantraos#section-contributors">
+  <img src="https://img.shields.io/opencollective/backers/yantraos?style=for-the-badge&logo=opencollective&logoColor=white&label=%F0%9F%A4%9D%20Community%20Backers&color=E040FB" alt="Backers"/>
+</a>
+
+<br/><br/>
+
+**[💜 Become a Backer →](https://opencollective.com/yantraos)**
+
+<br/>
+
+---
+
+### 💡 Why Fund an Open-Source OS?
+
+```
+  THE VALUE PROPOSITION
+  ═══════════════════════════════════════════════════════════════
+
+  [✓]  100% open-source. Always. MIT licensed.
+  [✓]  Zero VC funding. Zero proprietary lock-in.
+  [✓]  Full fiscal transparency via Open Collective.
+  [✓]  Your name/logo on this README forever.
+  [✓]  Direct line to core architects for sponsors.
+  [✓]  Early access to Phase 6: Multi-Node Fleet Intelligence.
+```
+
+<br/>
+
+> *"The best infrastructure is the kind no one notices — until it's gone."*  
+> *Fund what matters before it disappears.*
+
+<br/>
+
+[![Fund on Open Collective](https://img.shields.io/badge/Fund%20on%20Open%20Collective-7B2FBE?style=for-the-badge&logo=opencollective&logoColor=white)](https://opencollective.com/yantraos)
+
+<br/>
+
+</div>
 
 ---
 
