@@ -24,6 +24,7 @@
 [![Status](https://img.shields.io/badge/Status-v1.0%20Alpha%20Live-00FF41?style=for-the-badge)]()
 [![Phase](https://img.shields.io/badge/Phase%204-Autonomous%20OTA%20Evolution-FFB000?style=for-the-badge)]()
 [![IPC](https://img.shields.io/badge/IPC-UNIX%20Domain%20Socket-00FF41?style=for-the-badge&logo=linux&logoColor=000000)]()
+[![Discord](https://img.shields.io/badge/Discord-Sovereign%20Fleet-00E5FF?style=for-the-badge&logo=discord&logoColor=101010)](https://discord.gg/tkg6XQBPpK)
 
 <br/>
 
