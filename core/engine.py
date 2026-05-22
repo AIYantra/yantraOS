@@ -112,6 +112,11 @@ ITERATION_INTERVAL_SECS = 10
 WATCHDOG_SEC = 30
 _WATCHDOG_PING_INTERVAL = WATCHDOG_SEC / 2  # 15 s
 
+# Maximum actions the LLM is allowed to propose per iteration.
+# Prevents hallucinated action floods from causing memory leaks or
+# unbounded execution in the ACT phase.
+MAX_PENDING_ACTIONS = 5
+
 
 # ── Kriya Loop Engine ─────────────────────────────────────────────
 
@@ -130,6 +135,14 @@ class KriyaLoopEngine:
         self._safety = get_safety_context()
         self._running = False
         self._last_watchdog_ping: float = 0.0  # monotonic timestamp of last WATCHDOG=1
+
+        # ── GATE 3: Concurrency Guard ──────────────────────────────
+        # Protects mutable KriyaState fields (is_paused, pending_actions,
+        # injected_thoughts, injected_directives) from race conditions
+        # between the main Kriya Loop and the IPC server background task.
+        # During LiteLLM cloud inference awaits, the event loop can service
+        # IPC requests that mutate state — this lock serializes access.
+        self._state_lock = asyncio.Lock()
 
         # ── sdnotify initialization ────────────────────────────────
         # Instantiate the notifier unconditionally; methods are no-ops
@@ -441,6 +454,27 @@ class KriyaLoopEngine:
 
                 parsed = json.loads(cleaned)
                 actions = parsed.get("actions", [])
+
+                # ── FAILURE 2 FIX: Cap actions to prevent LLM hallucination floods ──
+                available_slots = MAX_PENDING_ACTIONS - len(self._state.pending_actions)
+                if available_slots <= 0:
+                    cap_msg = (
+                        f"> REASON: Action queue full ({MAX_PENDING_ACTIONS}). "
+                        f"Dropping {len(actions)} LLM-proposed action(s)."
+                    )
+                    log.warning(cap_msg)
+                    self._push_log(cap_msg)
+                    actions = []
+                else:
+                    if len(actions) > available_slots:
+                        drop_msg = (
+                            f"> REASON: LLM proposed {len(actions)} actions, "
+                            f"capping to {available_slots} (MAX_PENDING_ACTIONS={MAX_PENDING_ACTIONS})."
+                        )
+                        log.warning(drop_msg)
+                        self._push_log(drop_msg)
+                    actions = actions[:available_slots]
+
                 for action in actions:
                     if isinstance(action, dict) and "type" in action:
                         if action["type"] == "fleet_query":
@@ -505,19 +539,36 @@ class KriyaLoopEngine:
         """
         Execute pending actions safely via the Docker sandbox.
         If the sandbox is degraded, log the action without execution.
+
+        GATE 3 FIX: Acquires _state_lock and checks is_paused BEFORE
+        processing any actions. This closes the race window where a
+        user's pause command arrives during a cloud inference await
+        in REASON phase but actions still execute because the pause
+        check at the loop top only fires at iteration boundaries.
         """
         self._state.phase = KriyaPhase.ACT
         self._state.last_action_results = []
 
-        if not self._state.pending_actions:
-            msg = "> DAEMON: [ACT] No actions pending — system nominal."
-            log.info(msg)
-            self._push_log(msg)
-            return
+        # ── GATE 3: Atomic pause check + action snapshot ──────────
+        async with self._state_lock:
+            if self._state.is_paused:
+                msg = "> DAEMON: [ACT] Skipped — loop is PAUSED (mid-iteration pause detected)."
+                log.info(msg)
+                self._push_log(msg)
+                return
 
-        log.info(f"> DAEMON: [ACT] Executing {len(self._state.pending_actions)} action(s)...")
+            if not self._state.pending_actions:
+                msg = "> DAEMON: [ACT] No actions pending — system nominal."
+                log.info(msg)
+                self._push_log(msg)
+                return
 
-        for action in self._state.pending_actions:
+            # Snapshot actions under lock, then release lock for execution
+            actions_snapshot = list(self._state.pending_actions)
+
+        log.info(f"> DAEMON: [ACT] Executing {len(actions_snapshot)} action(s)...")
+
+        for action in actions_snapshot:
             action_type = action["type"]
             reason = action["reason"]
             log.info(f"> ACTION: {action_type} — {reason}")
@@ -599,13 +650,17 @@ class KriyaLoopEngine:
                 self._state.last_action_results.append(result)
                 continue
 
-            # ── Injected commands: ALWAYS execute (sandbox → host fallback) ──
+            # ── Injected commands: execute ONLY via sandbox ─────────────
+            # GATE 1 FIX: The `if False` bypass and bare create_subprocess_shell
+            # host fallback have been permanently removed. LLM-generated scripts
+            # MUST execute inside the Docker sandbox. If the sandbox is degraded,
+            # the command is logged and deferred — never executed on bare metal.
             elif action_type == "injected_command" and script:
-                executed = False
                 result: dict = {}
+                stdout_text = ""
+                stderr_text = ""
 
-                # Attempt 1: Docker sandbox (DISABLED — always use host fallback)
-                if False and sandbox.is_operational:
+                if sandbox.is_operational:
                     try:
                         sandbox_result = await sandbox.execute(script)
                         result = {
@@ -627,55 +682,33 @@ class KriyaLoopEngine:
 
                         stdout_text = (sandbox_result.stdout or "").strip()
                         stderr_text = (getattr(sandbox_result, "stderr", "") or "").strip()
-                        executed = True
                     except Exception as exc:
-                        warn = f"> ACTION: Sandbox execution failed: {exc} — falling back to host."
-                        log.warning(warn)
-                        self._push_log(warn)
-
-                # Attempt 2: Direct host execution (fallback)
-                if not executed:
-                    fallback_msg = f"> ACTION: Executing on host — {script}"
-                    log.info(fallback_msg)
-                    self._push_log(fallback_msg)
-                    try:
-                        proc = await asyncio.create_subprocess_shell(
-                            script,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE,
-                        )
-                        raw_stdout, raw_stderr = await asyncio.wait_for(
-                            proc.communicate(), timeout=30.0
-                        )
-                        stdout_text = (raw_stdout or b"").decode(errors="replace").strip()
-                        stderr_text = (raw_stderr or b"").decode(errors="replace").strip()
-                        exit_code = proc.returncode or 0
+                        err_msg = f"> ACTION: Sandbox execution failed: {exc}"
+                        log.error(err_msg)
+                        self._push_log(err_msg)
                         result = {
                             "action": action_type,
-                            "status": "success" if exit_code == 0 else "failure",
-                            "exit_code": exit_code,
-                            "stdout": stdout_text[:2000],
-                            "stderr": stderr_text[:1000],
+                            "status": "sandbox_error",
+                            "exit_code": -1,
                             "ts": time.time(),
                         }
-                        status_msg = (
-                            f"> ACTION: {action_type} — host exec "
-                            f"(exit={exit_code})"
-                        )
-                        self._push_log(status_msg)
-                        log.info(status_msg)
-                    except asyncio.TimeoutError:
-                        stdout_text, stderr_text = "", "Execution timed out (30s)"
-                        result = {"action": action_type, "status": "timeout", "exit_code": -1, "ts": time.time()}
-                        err_msg = f"> ACTION: {action_type} — TIMEOUT (30s limit)"
-                        self._push_log(err_msg)
-                        log.info(err_msg)
-                    except Exception as exc:
-                        stdout_text, stderr_text = "", str(exc)
-                        result = {"action": action_type, "status": "error", "exit_code": -1, "ts": time.time()}
-                        err_msg = f"> ACTION: {action_type} — execution error: {exc}"
-                        self._push_log(err_msg)
-                        log.info(err_msg)
+                else:
+                    # Sandbox is DEGRADED or UNAVAILABLE — DO NOT fall back to host.
+                    # Log the deferred command for audit and move on.
+                    defer_msg = (
+                        f"> ACTION: {action_type} — sandbox {sandbox.status.value}, "
+                        f"command DEFERRED (host execution prohibited). "
+                        f"Script: {script[:200]}"
+                    )
+                    log.warning(defer_msg)
+                    self._push_log(defer_msg)
+                    result = {
+                        "action": action_type,
+                        "status": "deferred_no_sandbox",
+                        "exit_code": -1,
+                        "reason": f"Sandbox {sandbox.status.value} — host fallback prohibited",
+                        "ts": time.time(),
+                    }
 
                 # ── Broadcast stdout/stderr to TUI ThoughtStream via SSE ──
                 if stdout_text:
@@ -886,6 +919,10 @@ class KriyaLoopEngine:
         # ── Initialize subsystems ──────────────────────────────────
         self._sd_notify("STATUS=Initializing IPC server...")
         set_state_ref(self._state)  # Inject live state into IPC server
+
+        # ── GATE 3: Inject concurrency lock into IPC server ───────
+        from .ipc_server import set_state_lock_ref
+        set_state_lock_ref(self._state_lock)
 
         if os.name != "nt":
             # Launch FastAPI/UDS IPC server as background task (Linux only)

@@ -55,7 +55,25 @@ function rollback {
 }
 trap rollback ERR
 
-log_info "5. Installing components (simulated)..."
+log_info "5. Enforcing BTRFS nodatacow on ChromaDB storage..."
+# ── GATE 2: BTRFS CoW Death Spiral Prevention ────────────────────────────────
+# ChromaDB uses SQLite WAL mode. On BTRFS, CoW + WAL causes exponential
+# B-tree fragmentation under sustained writes (the "WAL death spiral").
+# chattr +C (nodatacow) MUST be set on the EMPTY directory BEFORE ChromaDB
+# creates its database files. Applying +C to existing files has NO effect
+# on already-allocated extents.
+CHROMA_DIR="/var/lib/yantra/chromadb"
+mkdir -p "$CHROMA_DIR"
+if command -v chattr &>/dev/null; then
+    chattr +C "$CHROMA_DIR" 2>/dev/null || log_info "chattr +C skipped (non-BTRFS or already set)."
+    log_ok "BTRFS nodatacow enforced on $CHROMA_DIR."
+else
+    log_info "chattr not available — skipping (non-BTRFS filesystem assumed)."
+fi
+chown yantra_daemon:yantra "$CHROMA_DIR" 2>/dev/null || true
+chmod 750 "$CHROMA_DIR"
+
+log_info "6. Installing components (simulated)..."
 # (Actual component installation omitted for brevity)
 # Suppose Python requirements fail here:
 # if ! pip install <reqs>; then

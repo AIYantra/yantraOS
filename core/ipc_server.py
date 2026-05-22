@@ -35,12 +35,22 @@ log = logging.getLogger("yantra.ipc_server")
 _state_ref: object | None = None
 _active_streaming_queues: set[asyncio.Queue[str]] = set()
 
+# ── GATE 3: Shared concurrency lock (injected by engine.py) ──────────────────
+_state_lock: asyncio.Lock | None = None
+
 
 def set_state_ref(state: object) -> None:
     """Inject a live KriyaState reference into the web server module."""
     global _state_ref
     _state_ref = state
     log.info("> WEB: State reference registered.")
+
+
+def set_state_lock_ref(lock: asyncio.Lock) -> None:
+    """Inject the shared asyncio.Lock for state mutation serialization."""
+    global _state_lock
+    _state_lock = lock
+    log.info("> WEB: State lock reference registered.")
 
 
 def push_log_event(message: str) -> None:
@@ -173,19 +183,31 @@ async def command(request: Request):
 
     if action == "shutdown":
         if _state_ref is not None:
-            _state_ref.shutdown_requested = True  # type: ignore[attr-defined]
+            if _state_lock:
+                async with _state_lock:
+                    _state_ref.shutdown_requested = True  # type: ignore[attr-defined]
+            else:
+                _state_ref.shutdown_requested = True  # type: ignore[attr-defined]
             log.info("> WEB: Shutdown requested via /command endpoint.")
         return JSONResponse({"status": "shutdown_requested"})
 
     if action == "pause":
         if _state_ref is not None:
-            _state_ref.is_paused = True  # type: ignore[attr-defined]
+            if _state_lock:
+                async with _state_lock:
+                    _state_ref.is_paused = True  # type: ignore[attr-defined]
+            else:
+                _state_ref.is_paused = True  # type: ignore[attr-defined]
             log.info("> WEB: Kriya Loop PAUSED via /command endpoint.")
         return JSONResponse({"status": "paused"})
 
     if action == "resume":
         if _state_ref is not None:
-            _state_ref.is_paused = False  # type: ignore[attr-defined]
+            if _state_lock:
+                async with _state_lock:
+                    _state_ref.is_paused = False  # type: ignore[attr-defined]
+            else:
+                _state_ref.is_paused = False  # type: ignore[attr-defined]
             log.info("> WEB: Kriya Loop RESUMED via /command endpoint.")
         return JSONResponse({"status": "resumed"})
 
@@ -197,7 +219,11 @@ async def command(request: Request):
                 status_code=400,
             )
         if _state_ref is not None:
-            _state_ref.injected_thoughts.append(payload)  # type: ignore[attr-defined]
+            if _state_lock:
+                async with _state_lock:
+                    _state_ref.injected_thoughts.append(payload)  # type: ignore[attr-defined]
+            else:
+                _state_ref.injected_thoughts.append(payload)  # type: ignore[attr-defined]
             log.info(f"> WEB: Injected thought — {payload!r}")
         return JSONResponse({"status": "injected", "payload": payload})
 
@@ -210,8 +236,13 @@ async def command(request: Request):
                 status_code=400,
             )
         if _state_ref is not None:
-            _state_ref.active_model      = model        # type: ignore[attr-defined]
-            _state_ref.inference_routing = route        # type: ignore[attr-defined]
+            if _state_lock:
+                async with _state_lock:
+                    _state_ref.active_model      = model        # type: ignore[attr-defined]
+                    _state_ref.inference_routing = route        # type: ignore[attr-defined]
+            else:
+                _state_ref.active_model      = model        # type: ignore[attr-defined]
+                _state_ref.inference_routing = route        # type: ignore[attr-defined]
         return JSONResponse({"status": "model_set", "route": route, "model": model})
 
     if action == "SYSTEM_OTA_UPDATE":

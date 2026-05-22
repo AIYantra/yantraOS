@@ -450,6 +450,70 @@ else
 fi
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE 5.9: RC2 ISO GATES
+# Inject sandbox dependencies into the ISO package manifest and generate a
+# oneshot service to enforce BTRFS nodatacow before the daemon starts.
+# ══════════════════════════════════════════════════════════════════════════════
+
+log_info "═══ PHASE 5.9: RC2 ISO Gates ═══"
+
+# ── 5.9.1: Inject sandbox packages into ISO profile ─────────────────────
+PKG_FILE="${SCRIPT_DIR}/packages.x86_64"
+if [[ -f "${PKG_FILE}" ]]; then
+    for pkg in "docker" "bubblewrap"; do
+        if ! grep -qx "${pkg}" "${PKG_FILE}"; then
+            echo "${pkg}" >> "${PKG_FILE}"
+            log_info "  ↳ Injected '${pkg}' into packages.x86_64"
+        else
+            log_info "  ↳ '${pkg}' already present in packages.x86_64"
+        fi
+    done
+    log_ok "Sandbox packages verified in ISO manifest."
+else
+    log_error "FATAL: ${PKG_FILE} not found. Cannot inject sandbox dependencies."
+    exit 1
+fi
+
+# ── 5.9.2: Generate yantra-live-setup.service (Type=oneshot) ─────────────
+# This unit runs BEFORE yantra.service on every boot to:
+#   1. Create /var/lib/yantra/chromadb with +C (nodatacow) flag
+#   2. Unmask the BTRFS pacman snapshot hook
+# Without this, the yantra.service ExecStartPre assertion will CRASH on
+# first boot because the directory doesn't exist yet.
+SETUP_SERVICE="${AIROOTFS}/etc/systemd/system/yantra-live-setup.service"
+cat << 'SVCEOF' > "${SETUP_SERVICE}"
+[Unit]
+Description=YantraOS Live Environment Setup (RC2 Gates)
+DefaultDependencies=no
+Before=yantra.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Gate 2: BTRFS nodatacow enforcement on empty ChromaDB directory.
+# chattr +C MUST be set BEFORE ChromaDB creates its SQLite files.
+# On non-BTRFS, chattr fails silently (|| true).
+ExecStart=/bin/bash -c "mkdir -p /var/lib/yantra/chromadb && chattr +C /var/lib/yantra/chromadb 2>/dev/null || true"
+ExecStart=/bin/bash -c "chown yantra_daemon:yantra /var/lib/yantra/chromadb 2>/dev/null || true"
+ExecStart=/bin/bash -c "chmod 750 /var/lib/yantra/chromadb"
+
+# Unmask the BTRFS pacman snapshot hook (disabled during ISO build).
+ExecStart=/bin/bash -c "if [ -f /etc/pacman.d/hooks/00-yantra-autosnap.hook.inactive ]; then mv /etc/pacman.d/hooks/00-yantra-autosnap.hook.inactive /etc/pacman.d/hooks/00-yantra-autosnap.hook; fi"
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+chmod 644 "${SETUP_SERVICE}"
+log_ok "Generated yantra-live-setup.service (oneshot, Before=yantra.service)."
+
+# ── 5.9.3: Enable the oneshot service via symlink ────────────────────────
+ln -sf "/etc/systemd/system/yantra-live-setup.service" "${WANTS_DIR}/yantra-live-setup.service"
+log_ok "yantra-live-setup.service enabled in multi-user.target.wants."
+
+
 # ── Final root privilege check (belt-and-suspenders) ─────────────────────────
 if [[ $EUID -ne 0 ]]; then
     log_error "FATAL: Lost root privileges before mkarchiso. Aborting."

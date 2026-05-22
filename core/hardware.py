@@ -113,6 +113,34 @@ def _probe_nvidia() -> GPUState | None:
         return None
 
 
+# ── sysfs VRAM Probe (AMD/Intel) ──────────────────────────────────────────────
+
+
+def _probe_sysfs_vram() -> float:
+    """
+    Read real VRAM from sysfs for AMD GPUs.
+
+    Path: /sys/class/drm/card*/device/mem_info_vram_total
+    Returns VRAM in GB, or 0.0 if the sysfs node doesn't exist
+    (Intel iGPUs, older kernels, or non-AMD hardware).
+    """
+    import glob
+
+    for card_path in sorted(glob.glob("/sys/class/drm/card*/device/mem_info_vram_total")):
+        try:
+            with open(card_path, "r") as f:
+                vram_bytes = int(f.read().strip())
+            vram_gb = vram_bytes / (1024 ** 3)
+            if vram_gb > 0:
+                log.info(f"> HARDWARE: sysfs VRAM detected via {card_path}: {vram_gb:.1f} GB")
+                return vram_gb
+        except (ValueError, OSError, IOError) as e:
+            log.debug(f"> HARDWARE: sysfs probe failed for {card_path}: {e}")
+            continue
+
+    return 0.0
+
+
 # ── lspci Fallback (AMD/Intel) ────────────────────────────────────────────────
 
 
@@ -120,8 +148,11 @@ def _probe_lspci() -> GPUState:
     """
     Fallback GPU detection using lspci -nn.
     Identifies AMD/Intel discrete or integrated GPUs.
-    Since lspci cannot report VRAM, we classify as CLOUD_ONLY
-    unless an AMD discrete GPU (Radeon RX) is detected.
+
+    GATE 4 FIX: AMD VRAM is no longer hardcoded. We probe sysfs
+    (/sys/class/drm/card*/device/mem_info_vram_total) for real values.
+    If sysfs reports < 8GB (e.g. APU with shared memory), the GPU is
+    classified as CLOUD_ONLY to prevent OOM during local inference.
     """
     try:
         raw = subprocess.check_output(
@@ -160,19 +191,33 @@ def _probe_lspci() -> GPUState:
         elif "advanced micro" in lower or "amd" in lower or "ati" in lower:
             vendor = "amd"
             gpu_name = line.split(":")[-1].strip()
-            # Check if it's a discrete Radeon RX card (likely ≥ 8GB)
-            if "radeon rx" in lower or "navi" in lower or "vega" in lower:
-                log.info(f"> HARDWARE: AMD discrete GPU detected: {gpu_name}")
+
+            # ── GATE 4: Deterministic AMD VRAM via sysfs ──────────────
+            # DO NOT guess VRAM from lspci product names. Read the real
+            # value from /sys/class/drm/card*/device/mem_info_vram_total.
+            # APUs (Vega 8, RDNA iGPU) report 0 or ~256MB dedicated VRAM
+            # and MUST be classified CLOUD_ONLY to prevent OOM.
+            sysfs_vram = _probe_sysfs_vram()
+            if sysfs_vram >= VRAM_LOCAL_THRESHOLD_GB:
+                log.info(
+                    f"> HARDWARE: AMD discrete GPU detected: {gpu_name} — "
+                    f"sysfs VRAM: {sysfs_vram:.1f} GB (LOCAL_CAPABLE)"
+                )
                 return GPUState(
                     name=gpu_name,
-                    vram_total_gb=8.0,  # Conservative estimate for discrete AMD
+                    vram_total_gb=sysfs_vram,
                     capability=GpuCapability.LOCAL_CAPABLE,
                     vendor="amd",
                 )
             else:
-                log.info(f"> HARDWARE: AMD integrated GPU detected: {gpu_name}")
+                vram_msg = f"{sysfs_vram:.1f} GB" if sysfs_vram > 0 else "not reported"
+                log.info(
+                    f"> HARDWARE: AMD GPU detected: {gpu_name} — "
+                    f"sysfs VRAM: {vram_msg} (CLOUD_ONLY)"
+                )
                 return GPUState(
                     name=gpu_name,
+                    vram_total_gb=sysfs_vram,
                     capability=GpuCapability.CLOUD_ONLY,
                     vendor="amd",
                 )
