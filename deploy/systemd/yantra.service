@@ -58,12 +58,21 @@ User=yantra_daemon
 Group=yantra
 ExecStart=/opt/yantra/venv/bin/python3 /opt/yantra/core/daemon.py
 
+# ── RC3 MIGRATION: BTRFS nodatacow fix for RC1 upgraders ─────────────────────
+# RC1 users created /var/lib/yantra/chromadb BEFORE the +C flag was applied.
+# chattr +C on a populated dir does NOTHING to existing extents — causing
+# 10-50x write amplification on every ChromaDB transaction.
+# This script detects the missing flag, creates a new +C directory, copies
+# data with --reflink=never, and atomically swaps. Idempotent — exits cleanly
+# if +C is already present.
+# The '+' prefix runs the script as root (required for chattr) regardless of
+# the User= directive.
+ExecStartPre=+/usr/bin/bash /opt/yantra/scripts/migrate_chroma.sh
+
 # ── GATE 2: BTRFS nodatacow ASSERTION ─────────────────────────────────────────
 # chattr +C on an existing directory with files does NOTHING to existing extents.
-# Instead of silently re-running chattr, we ASSERT the flag is present.
-# If the flag is missing, the service refuses to start — forcing the operator
-# to run: mkdir -p /var/lib/yantra/chromadb && chattr +C /var/lib/yantra/chromadb
-# BEFORE any ChromaDB files are created. install.sh handles this on first boot.
+# After the migration script above runs (or is a no-op), we ASSERT the flag is
+# present. If the flag is STILL missing, the service refuses to start.
 ExecStartPre=/bin/bash -c "lsattr -d /var/lib/yantra/chromadb | grep -q 'C' || (echo 'FATAL: chromadb dir missing nodatacow (+C) flag. Run: chattr +C /var/lib/yantra/chromadb on an EMPTY dir.' && exit 1)"
 Environment="PYTHONPATH=/opt/yantra" "ANONYMIZED_TELEMETRY=False"
 Environment="HOME=/tmp"

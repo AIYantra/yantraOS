@@ -21,6 +21,8 @@ Milestone 3 integration:
 from __future__ import annotations
 
 import asyncio
+import collections
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +50,7 @@ from .hybrid_router import (
 )
 from .vector_memory import memory as vector_memory, ExecutionRecord
 from .sandbox import sandbox, SandboxStatus
+from .compliance_executor import compliance_executor
 
 log = logging.getLogger("yantra.engine")
 
@@ -64,6 +67,100 @@ class KriyaPhase(str, Enum):
 
 
 # ── State ─────────────────────────────────────────────────────────
+
+# Maximum actions the LLM is allowed to propose / hold pending per
+# iteration. Caps hallucinated action floods and bounds the FIFO queue.
+# Defined here (ahead of KriyaState) because TrackedActionQueue consumes
+# it as its default capacity.
+MAX_PENDING_ACTIONS: int = 5
+
+# Audit sink for dropped intents. The Kriya Loop must never lose an
+# autonomous action without a cryptographic record, so evictions are
+# written here at WARN level in addition to the daemon's stdout stream.
+_EVICTION_AUDIT_PATH: str = "/var/log/yantra/engine.log"
+
+
+def _eviction_audit_logger() -> logging.Logger:
+    """
+    Return the dedicated queue-eviction audit logger.
+
+    Lazily attaches a single WARN-level FileHandler bound to
+    ``/var/log/yantra/engine.log``. If that path is not writable
+    (unit tests, non-root dev hosts), we degrade gracefully to the
+    daemon's stdout logger via propagation rather than crashing the
+    Kriya Loop — the WARN is surfaced either way, never silently lost.
+    """
+    audit: logging.Logger = logging.getLogger("yantra.engine.queue")
+    audit.setLevel(logging.WARNING)
+    audit.propagate = True  # also surface on the daemon's root stdout handler
+
+    already_bound: bool = any(
+        getattr(handler, "_yantra_eviction_sink", False)
+        for handler in audit.handlers
+    )
+    if not already_bound:
+        try:
+            os.makedirs(os.path.dirname(_EVICTION_AUDIT_PATH), exist_ok=True)
+            file_handler: logging.Handler = logging.FileHandler(
+                _EVICTION_AUDIT_PATH
+            )
+            file_handler.setLevel(logging.WARNING)
+            file_handler.setFormatter(logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s — %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            ))
+            # Tag so we never double-attach across KriyaState rebuilds.
+            file_handler._yantra_eviction_sink = True  # type: ignore[attr-defined]
+            audit.addHandler(file_handler)
+        except OSError as exc:
+            log.warning(
+                "Queue eviction audit log unavailable at %s (%s) — "
+                "falling back to stdout logger.",
+                _EVICTION_AUDIT_PATH, exc,
+            )
+    return audit
+
+
+class TrackedActionQueue(collections.deque[dict[str, Any]]):
+    """
+    Bounded FIFO action queue with mandatory eviction auditing.
+
+    A bare ``collections.deque(maxlen=N)`` silently discards the oldest
+    element once it is full — an unacceptable silent state loss for
+    autonomous intents. This subclass intercepts every capacity-driven
+    eviction in :meth:`append`, SHA-256 fingerprints the dropped action,
+    and emits a strictly formatted ``WARN`` audit record before the
+    underlying deque drops it.
+
+    FIFO semantics are preserved: ``append`` adds to the right, and the
+    oldest element (index 0 / left) is the one evicted when full.
+    """
+
+    def __init__(self, maxlen: int = MAX_PENDING_ACTIONS) -> None:
+        super().__init__(maxlen=maxlen)
+        self._audit: logging.Logger = _eviction_audit_logger()
+
+    def append(self, action: dict[str, Any]) -> None:  # type: ignore[override]
+        # Intercept the silent FIFO eviction *before* it happens: a full
+        # deque would otherwise drop index 0 (the oldest intent) with no
+        # trace. We can only inspect the victim while it is still present.
+        cap: int | None = self.maxlen
+        if cap is not None and len(self) == cap:
+            self._audit_eviction(self[0], cap)
+        super().append(action)
+
+    def _audit_eviction(self, evicted: dict[str, Any], cap: int) -> None:
+        """Fingerprint and log a single dropped action at WARN level."""
+        intent_type: str = str(evicted.get("type", "UNKNOWN"))
+        canonical: bytes = json.dumps(
+            evicted, sort_keys=True, default=str
+        ).encode("utf-8")
+        fingerprint: str = hashlib.sha256(canonical).hexdigest()
+        self._audit.warning(
+            "[QUEUE_EVICTION] Action Dropped | Intent: %s | Hash: %s | "
+            "Reason: Capacity MAX_PENDING_ACTIONS=%d reached.",
+            intent_type, fingerprint, cap,
+        )
 
 
 @dataclass
@@ -84,8 +181,15 @@ class KriyaState:
     active_model: str = "unknown"
     inference_routing: str = "LOCAL"
 
-    # Action intent from REASON phase
-    pending_actions: list[dict] = field(default_factory=list)
+    # RC3: Deep telemetry fields for TUI/Wayland HUD consumers.
+    # Strictly typed numerical values — parsed directly by the Brutalist TUI.
+    vram_allocation_mb: int = 0          # Current VRAM allocation in megabytes
+    inference_tps: float = 0.0           # Inference throughput (tokens/second)
+    context_window_tokens: int = 0       # Active context window size (token count)
+
+    # Action intent from REASON phase. Bounded FIFO queue (maxlen=5)
+    # with mandatory cryptographic audit logging on eviction.
+    pending_actions: TrackedActionQueue = field(default_factory=TrackedActionQueue)
 
     # Results from ACT phase
     last_action_results: list[dict] = field(default_factory=list)
@@ -112,10 +216,8 @@ ITERATION_INTERVAL_SECS = 10
 WATCHDOG_SEC = 30
 _WATCHDOG_PING_INTERVAL = WATCHDOG_SEC / 2  # 15 s
 
-# Maximum actions the LLM is allowed to propose per iteration.
-# Prevents hallucinated action floods from causing memory leaks or
-# unbounded execution in the ACT phase.
-MAX_PENDING_ACTIONS = 5
+# NOTE: MAX_PENDING_ACTIONS is defined in the State section above, ahead
+# of TrackedActionQueue which consumes it as its default FIFO capacity.
 
 
 # ── Kriya Loop Engine ─────────────────────────────────────────────
@@ -177,19 +279,41 @@ class KriyaLoopEngine:
         """
         Emit WATCHDOG=1 if enough time has elapsed since the last ping.
 
-        CRITICAL DESIGN INVARIANT:
-        This method is called ONLY after a Kriya phase completes successfully.
-        It is NOT dispatched from an independent asyncio.sleep() timer.
-        If the cognitive work queue stalls (deadlock), this method is never
-        reached, the watchdog timer expires (WatchdogSec=30s), and systemd
-        dispatches SIGABRT → auto-restart.
-
-        This is the sole mechanism that keeps the daemon alive.
+        CRITICAL DESIGN INVARIANT (updated):
+        This method is called after each Kriya phase completes as a
+        supplementary ping. The primary watchdog heartbeat is now driven
+        by the independent _watchdog_heartbeat_loop() coroutine, which
+        runs on the event loop and fires every 15 seconds regardless of
+        whether inference is blocking in the ThreadPoolExecutor. This
+        eliminates the starvation failure mode where a long-running
+        litellm call prevented the phase-gated ping from firing.
         """
         now = time.monotonic()
         if now - self._last_watchdog_ping >= _WATCHDOG_PING_INTERVAL:
             self._sd_notify("WATCHDOG=1")
             self._last_watchdog_ping = now
+
+    async def _watchdog_heartbeat_loop(self) -> None:
+        """
+        Independent watchdog heartbeat — fires WATCHDOG=1 every 15 seconds.
+
+        This coroutine runs as a top-level asyncio task, completely decoupled
+        from the Kriya Loop phase progression. Because litellm inference is
+        now offloaded to a ThreadPoolExecutor (see hybrid_router.py), the
+        event loop is free to schedule this coroutine even during long-running
+        inference calls.
+
+        This is the PRIMARY mechanism that keeps the daemon alive. The
+        per-phase _sd_watchdog_ping() calls are supplementary.
+
+        The TUI telemetry UNIX socket (/run/yantra/ipc.sock) responsiveness
+        is also guaranteed by this design: the event loop services both this
+        heartbeat and uvicorn's UDS accept() without contention.
+        """
+        while self._running and not self._state.shutdown_requested:
+            self._sd_notify("WATCHDOG=1")
+            self._last_watchdog_ping = time.monotonic()
+            await asyncio.sleep(_WATCHDOG_PING_INTERVAL)
 
     def _push_log(self, msg: str) -> None:
         """Add a log entry to the bounded tail AND broadcast it to all WebSocket clients."""
@@ -215,6 +339,12 @@ class KriyaLoopEngine:
         cpu_pct, disk_free_gb = probe_cpu_disk()
         self._state.cpu_pct = cpu_pct
         self._state.disk_free_gb = disk_free_gb
+
+        # RC3: Populate deep telemetry for TUI/Wayland HUD consumers.
+        # vram_allocation_mb: convert VRAM used (GB) → MB as integer.
+        # inference_tps and context_window_tokens are populated after
+        # inference completes in _phase_reason().
+        self._state.vram_allocation_mb = int(self._state.vram_used_gb * 1024)
 
         msg = (
             f"> TELEMETRY: VRAM {self._state.vram_used_gb:.1f}/"
@@ -242,7 +372,7 @@ class KriyaLoopEngine:
         to prevent thread deadlocks.
         """
         self._state.phase = KriyaPhase.REASON
-        self._state.pending_actions = []
+        self._state.pending_actions.clear()
         self._state.unresolved_deps = []
         self._push_log("> DAEMON: [REASON] Analyzing system state...")
         log.info("> DAEMON: [REASON] Analyzing system state...")
@@ -334,6 +464,7 @@ class KriyaLoopEngine:
 
         # ── Stream LLM inference with deadlock guard ───────────────────
         accumulated_response = ""
+        inference_start = time.monotonic()
         try:
             log.info("> REASONING: Streaming inference...")
             self._push_log("> REASONING: Streaming inference...")
@@ -353,6 +484,20 @@ class KriyaLoopEngine:
                 _stream_and_collect(),
                 timeout=INFERENCE_TIMEOUT_SECS,
             )
+
+            # RC3: Populate deep telemetry — inference throughput and context size.
+            # Approximate tokens from character count (~4 chars per token for
+            # English text). This is a rough heuristic; production should read
+            # usage metadata from the LiteLLM response object.
+            inference_elapsed: float = time.monotonic() - inference_start
+            approx_output_tokens: int = max(1, len(accumulated_response) // 4)
+            if inference_elapsed > 0:
+                self._state.inference_tps = round(approx_output_tokens / inference_elapsed, 2)
+            else:
+                self._state.inference_tps = 0.0
+            # Context window = input tokens (user_content) + output tokens
+            approx_input_tokens: int = len(user_content) // 4
+            self._state.context_window_tokens = approx_input_tokens + approx_output_tokens
 
             log.info(
                 f"> REASON: Inference complete — "
@@ -506,7 +651,7 @@ class KriyaLoopEngine:
                 self._push_log("> REASONING: Parse failed — using heuristics.")
                 log.info("> REASONING: Parse failed — using heuristics.")
                 # Clear any partial actions from failed parse
-                self._state.pending_actions = []
+                self._state.pending_actions.clear()
 
         # ── Deterministic heuristic fallback ───────────────────────────
         # Always evaluate heuristics if LLM produced zero actions.
@@ -935,6 +1080,12 @@ class KriyaLoopEngine:
         asyncio.create_task(self._telemetry_loop())
         log.info("> TELEMETRY: Fleet broadcasting loop launched.")
 
+        # Launch independent watchdog heartbeat — decoupled from phase
+        # progression so inference offloaded to ThreadPool cannot starve
+        # the WATCHDOG=1 ping. This is the primary keepalive mechanism.
+        asyncio.create_task(self._watchdog_heartbeat_loop())
+        log.info("> WATCHDOG: Independent heartbeat loop launched (interval=15s).")
+
         self._sd_notify("STATUS=Initializing vector memory...")
         try:
             await vector_memory.initialize()
@@ -948,6 +1099,19 @@ class KriyaLoopEngine:
         sandbox_status = await sandbox.initialize()
         log.info(f"> SANDBOX: Docker status — {sandbox_status.value}")
         self._push_log(f"> SANDBOX: Docker — {sandbox_status.value}")
+
+        # ── Initialize compliance assertion socket ─────────────────
+        # Sovereign data compliance layer — streams Ed25519-signed
+        # Kriya Loop state assertions to /run/yantra/compliance.sock.
+        # Non-fatal: if the socket fails to bind, the engine continues.
+        self._sd_notify("STATUS=Initializing compliance socket...")
+        try:
+            await compliance_executor.start()
+            log.info("> COMPLIANCE: Sovereign assertion socket initialized.")
+            self._push_log("> COMPLIANCE: Assertion socket active.")
+        except Exception as exc:
+            log.warning(f"> COMPLIANCE: Socket init failed (non-fatal): {exc}")
+            self._push_log(f"> COMPLIANCE: Init failed — {exc}")
 
         # ── Signal READY to systemd ────────────────────────────────
         # This must come AFTER all subsystem init. systemd will not
@@ -983,6 +1147,20 @@ class KriyaLoopEngine:
                 self._sd_watchdog_ping()
                 self._sd_notify(f"STATUS=SENSE complete (iter {self._state.iteration})")
 
+                # ── Compliance assertion: SENSE phase ──────────────────
+                asyncio.create_task(compliance_executor.stream_state_assertion(
+                    phase="SENSE",
+                    iteration=self._state.iteration,
+                    telemetry={
+                        "vram_used_gb": round(self._state.vram_used_gb, 2),
+                        "vram_total_gb": round(self._state.vram_total_gb, 2),
+                        "gpu_util_pct": round(self._state.gpu_util_pct, 1),
+                        "cpu_pct": round(self._state.cpu_pct, 1),
+                        "disk_free_gb": round(self._state.disk_free_gb, 2),
+                    },
+                    active_model=self._state.active_model,
+                ))
+
                 # Hardware-aware model selection
                 self._state.active_model = select_model_group(
                     self._state.vram_total_gb, self._state.vram_used_gb
@@ -991,8 +1169,24 @@ class KriyaLoopEngine:
                 await self._phase_reason()
                 self._sd_watchdog_ping()
 
+                # ── Compliance assertion: REASON phase ─────────────────
+                asyncio.create_task(compliance_executor.stream_state_assertion(
+                    phase="REASON",
+                    iteration=self._state.iteration,
+                    action_intent=list(self._state.pending_actions)[:5],
+                    active_model=self._state.active_model,
+                ))
+
                 await self._phase_act()
                 self._sd_watchdog_ping()
+
+                # ── Compliance assertion: ACT phase ────────────────────
+                asyncio.create_task(compliance_executor.stream_state_assertion(
+                    phase="ACT",
+                    iteration=self._state.iteration,
+                    action_intent=self._state.last_action_results[:5],
+                    active_model=self._state.active_model,
+                ))
 
                 await self._phase_remember()
                 self._sd_watchdog_ping()
@@ -1027,6 +1221,12 @@ class KriyaLoopEngine:
         # Flush subsystems
         vector_memory.shutdown()  # TRACER BULLET: ensure coroutine is awaited
         sandbox.shutdown()
+
+        # Shut down compliance assertion socket
+        try:
+            await compliance_executor.shutdown()
+        except Exception as exc:
+            log.warning(f"> COMPLIANCE: Shutdown error (non-fatal): {exc}")
 
         self._running = False
         log.info("> SYSTEM: All subsystems shut down. Daemon exit.")

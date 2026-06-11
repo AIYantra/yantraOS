@@ -21,8 +21,8 @@
 [![Platform](https://img.shields.io/badge/Platform-Arch%20Linux%20%7C%20Bare%20Metal-1793D1?style=for-the-badge&logo=archlinux&logoColor=white)](https://archlinux.org)
 [![Engine](https://img.shields.io/badge/Engine-Python%203.12%20%7C%20Asyncio-FFD700?style=for-the-badge&logo=python&logoColor=000000)](https://python.org)
 [![UI](https://img.shields.io/badge/Interface-Pure%20TUI%20%7C%20Textual-0057FF?style=for-the-badge&logo=gnometerminal&logoColor=white)]()
-[![Status](https://img.shields.io/badge/Status-v1.0%20Alpha%20Live-00FF41?style=for-the-badge)]()
-[![Phase](https://img.shields.io/badge/Phase%204-Autonomous%20OTA%20Evolution-FFB000?style=for-the-badge)]()
+[![Status](https://img.shields.io/badge/Status-v1.0%20Alpha%20RC2-00FF41?style=for-the-badge)]()
+[![Phase](https://img.shields.io/badge/Phase%206-Alpha%20RC2%20Survival%20Gates-FFB000?style=for-the-badge)]()
 [![IPC](https://img.shields.io/badge/IPC-UNIX%20Domain%20Socket-00FF41?style=for-the-badge&logo=linux&logoColor=000000)]()
 [![Discord](https://img.shields.io/discord/1472285496129355847?color=00E5FF&label=Sovereign%20Fleet&logo=discord&logoColor=101010&style=for-the-badge)](https://discord.gg/tkg6XQBPpK)
 
@@ -418,10 +418,10 @@ python3 -m core.tui_shell
 
 ---
 
-## `12` · CURRENT STATE · v1.0 ALPHA LIVE
+## `12` · CURRENT STATE · v1.0 ALPHA RC2
 
 ```
-  MILESTONE TRACKER                    STATUS: v1.0 ALPHA LIVE [✓]
+  MILESTONE TRACKER                    STATUS: v1.0 ALPHA RC2 [✓]
   ════════════════════════════════════════════════════════════════
 
   PHASE 1 — CORE DAEMON (COMPLETE)
@@ -464,10 +464,19 @@ python3 -m core.tui_shell
   [✓] Bypassed initramfs sulogin via SYSTEMD_SULOGIN_FORCE=1
   [✓] Autonomous dependency healing (LiteLLM cache Amnesia immunity)
 
+  PHASE 6 — ALPHA RC2 SURVIVAL GATES & WEB HUD (COMPLETE)
+  [✓] BTRFS nodatacow integrity enforced via chattr +C & yantra-live-setup.service
+  [✓] LLM action queue capped (MAX_PENDING_ACTIONS=5) preventing memory leaks
+  [✓] Dynamic AMD VRAM OOM sysfs probe routing APUs to CLOUD_ONLY
+  [✓] Thread-safe asyncio.Lock shared between KriyaLoop and IPC server
+  [✓] Web HUD kinetic redesign (Sora/JetBrains Mono, 0px radius, 1px cyan dividers)
+  [✓] Archiso packaging daemon bootstrap fix via PYTHONPATH injection
+  [✓] compile_iso.sh path variable privilege escalation vulnerability patched
+
   ONGOING
   [~] Restricted SSH whitelisted command gateway
-  [ ] NVIDIA driver injection on live ISO
   [ ] Full LLM -> Docker -> SSH -> Host end-to-end test
+  [ ] NVIDIA driver injection on live ISO
   [ ] Multi-node fleet management (Alpha + Edge topology)
 ```
 

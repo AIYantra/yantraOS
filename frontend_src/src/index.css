@@ -1,0 +1,50 @@
+/* ── Google Fonts — must be first in the file (PostCSS rule) ──────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Tailwind CSS v3 directives ────────────────────────────────────────────── */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Global resets & base tokens ───────────────────────────────────────────── */
+@layer base {
+  *, *::before, *::after {
+    @apply box-border;
+  }
+
+  html {
+    @apply scroll-smooth;
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-[#0d1117] text-slate-300 m-0;
+  }
+
+  #root {
+    @apply min-h-screen w-full;
+  }
+
+  /* Scrollbar styling for dark dashboard */
+  ::-webkit-scrollbar       { @apply w-1.5; }
+  ::-webkit-scrollbar-track { @apply bg-[#161b22]; }
+  ::-webkit-scrollbar-thumb { @apply bg-[#30363d] rounded-full; }
+}
+
+/* ── Utility layer additions ────────────────────────────────────────────────── */
+@layer utilities {
+  /* Glass-morphism card */
+  .glass {
+    background: rgba(22, 27, 34, 0.7);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(48, 54, 61, 0.6);
+  }
+
+  /* Glow accent ring */
+  .glow-yantra {
+    box-shadow: 0 0 0 1px rgba(37, 72, 240, 0.4), 0 0 16px rgba(37, 72, 240, 0.15);
+  }
+}

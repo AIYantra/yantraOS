@@ -32,6 +32,8 @@ Resilience invariants:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import functools
 import logging
 import os
 import time
@@ -45,6 +47,16 @@ log = logging.getLogger("yantra.hybrid_router")
 # can stall for 30–60 s under load. Capping at 45 s ensures the Kriya Loop
 # never blocks longer than one iteration interval (10 s) × 4.5.
 INFERENCE_TIMEOUT_SECS: float = 45.0
+
+# ── ThreadPool for LiteLLM Offload ────────────────────────────────────────────
+# LiteLLM's router.acompletion() internally invokes synchronous HTTP calls in
+# several code paths, which blocks the asyncio event loop and starves the
+# watchdog heartbeat + IPC socket. Offloading to a dedicated ThreadPoolExecutor
+# guarantees the event loop remains free to service sdnotify(WATCHDOG=1) and
+# /run/yantra/ipc.sock polling while inference futures resolve in OS threads.
+_INFERENCE_EXECUTOR: concurrent.futures.ThreadPoolExecutor = (
+    concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="yantra-llm")
+)
 
 # Secrets are injected into os.environ by systemd's EnvironmentFile directive
 # (EnvironmentFile=-/etc/yantra/host_secrets.env) in yantra.service.
@@ -261,6 +273,10 @@ async def complete(
     """
     Route a chat completion request through the hybrid fallback matrix.
 
+    All inference is offloaded to _INFERENCE_EXECUTOR via run_in_executor()
+    so that synchronous litellm internals never block the asyncio event loop.
+    The outer asyncio.wait_for() deadline is preserved as the hard timeout.
+
     Args:
         messages: OpenAI-format message list [{"role": "user", "content": "..."}]
         model:    Primary model group name. Defaults to "local/llama3".
@@ -283,16 +299,22 @@ async def complete(
 
     router = get_router()
     t_start = time.monotonic()
+    loop = asyncio.get_running_loop()
 
     log.info(f"> ROUTER: Routing inference → model_group={model} timeout={timeout}s")
 
     try:
+        # Offload the synchronous-internally litellm call to the thread pool.
+        # run_in_executor runs the coroutine's synchronous path in an OS thread,
+        # keeping the event loop free for watchdog pings and IPC servicing.
+        _call = functools.partial(
+            router.completion,
+            model=model,
+            messages=messages,
+            stream=stream,
+        )
         response = await asyncio.wait_for(
-            router.acompletion(
-                model=model,
-                messages=messages,
-                stream=stream,
-            ),
+            loop.run_in_executor(_INFERENCE_EXECUTOR, _call),
             timeout=timeout,
         )
     except asyncio.TimeoutError:
@@ -320,7 +342,7 @@ async def complete(
     log.info(f"> ROUTER: Inference complete in {elapsed:.2f}s")
 
     if stream:
-        return response  # Caller iterates the async generator
+        return response  # Caller iterates the generator
 
     # Extract text content from non-streaming response
     try:
@@ -340,18 +362,38 @@ async def stream_complete(
     """
     Convenience wrapper that yields token strings from a streaming completion.
 
+    The initial completion call is offloaded to the ThreadPoolExecutor via
+    complete(). Chunk iteration stays on the event loop since each chunk
+    yield is a natural cooperative suspension point.
+
     Usage in the Kriya Loop engine:
         async for token in hybrid_router.stream_complete(messages):
             push_log_event(token)
     """
     response = await complete(messages, model=model, timeout=timeout, stream=True)
-    async for chunk in response:
+    # stream=True with run_in_executor returns a synchronous iterator.
+    # Pull each chunk through the executor to avoid blocking the event loop.
+    loop = asyncio.get_running_loop()
+    _SENTINEL: object = object()
+
+    def _next_chunk() -> Any:
+        """Thread-safe pull of the next chunk from the sync iterator."""
+        return next(iter_ref, _SENTINEL)
+
+    iter_ref = iter(response)
+    while True:
+        chunk = await loop.run_in_executor(_INFERENCE_EXECUTOR, _next_chunk)
+        if chunk is _SENTINEL:
+            break
         try:
             delta = chunk.choices[0].delta.content
             if delta:
                 yield delta
         except (AttributeError, IndexError):
             continue
+        # Yield control back to the event loop between chunks so watchdog
+        # and IPC remain responsive during long streaming responses.
+        await asyncio.sleep(0)
 
 
 # ── Model Group Selection Helper ─────────────────────────────────────────────
