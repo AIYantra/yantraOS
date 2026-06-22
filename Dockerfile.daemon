@@ -1,0 +1,20 @@
+# YantraOS Daemon — Headless MVP
+FROM python:3.12-slim
+
+# Prevent Python from buffering stdout/stderr
+ENV PYTHONUNBUFFERED=1
+
+# Install docker-py for sibling-container execution, and litellm for the router
+RUN pip install --no-cache-dir docker litellm
+
+# Create log directory
+RUN mkdir -p /var/log/yantra
+
+# Set working directory
+WORKDIR /opt/yantra
+
+# Copy core execution stack
+COPY core/ /opt/yantra/core/
+
+# Execute daemon entrypoint
+ENTRYPOINT ["python3", "-m", "core.daemon"]

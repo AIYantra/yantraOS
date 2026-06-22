@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  yantra-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.daemon
+    container_name: yantra-daemon
+    restart: unless-stopped
+    env_file:
+      - .env
+    mem_limit: 512m
+    volumes:
+      # Sibling-container execution (CRITICAL)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent audit log mounting
+      - ./yantra_logs:/var/log/yantra
