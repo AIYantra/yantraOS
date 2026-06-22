@@ -1,11 +1,10 @@
 """
 YantraOS — Hybrid Cognitive Router (Headless MVP - Cloud Only)
 
-Instantiates a LiteLLM Router hardcoded to the CLOUD_ONLY pathway.
+Instantiates a LiteLLM Router hardcoded to the CLOUD_ONLY pathway using Azure OpenAI.
 
 Fallback chain:
-  Primary: gemini/gemini-2.0-flash
-  Fallback: claude/claude-3.5-haiku
+  Primary: azure/gpt-4o-mini
 """
 
 from __future__ import annotations
@@ -48,28 +47,19 @@ def _build_router() -> Any:
 
     model_list: list[dict[str, Any]] = [
         {
-            "model_name": "gemini/flash",
+            "model_name": "azure/gpt-4o-mini",
             "litellm_params": {
-                "model": "gemini/gemini-2.0-flash",
-                "api_key": os.environ.get("GEMINI_API_KEY", "your-api-key-here"),
-                "timeout": _CLOUD_REQUEST_TIMEOUT_SECS,
-                "stream": True,
-            },
-        },
-        {
-            "model_name": "claude/haiku",
-            "litellm_params": {
-                "model": "anthropic/claude-3-5-haiku-20241022",
-                "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
+                "model": "azure/gpt-4o-mini",
+                "api_key": os.environ.get("AZURE_API_KEY", ""),
+                "api_base": os.environ.get("AZURE_API_BASE", ""),
+                "api_version": os.environ.get("AZURE_API_VERSION", ""),
                 "timeout": _CLOUD_REQUEST_TIMEOUT_SECS,
                 "stream": True,
             },
         },
     ]
 
-    fallbacks = [
-        {"gemini/flash": ["claude/haiku"]},
-    ]
+    fallbacks = []
 
     router = Router(
         model_list=model_list,
@@ -101,7 +91,7 @@ def detect_hardware_capability() -> str:
 async def complete(
     messages: list[dict[str, str]],
     *,
-    model: str = "gemini/flash",
+    model: str = "azure/gpt-4o-mini",
     timeout: float = INFERENCE_TIMEOUT_SECS,
     stream: bool = False,
 ) -> str | Any:
@@ -155,7 +145,7 @@ async def complete(
 async def stream_complete(
     messages: list[dict[str, str]],
     *,
-    model: str = "gemini/flash",
+    model: str = "azure/gpt-4o-mini",
     timeout: float = INFERENCE_TIMEOUT_SECS,
 ) -> AsyncIterator[str]:
     response = await complete(messages, model=model, timeout=timeout, stream=True)
@@ -180,4 +170,4 @@ async def stream_complete(
 
 
 def select_model_group(vram_total_gb: float, vram_used_gb: float) -> str:
-    return "gemini/flash"
+    return "azure/gpt-4o-mini"
