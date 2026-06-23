@@ -294,3 +294,17 @@ def probe_all() -> HardwareSnapshot:
     gpu = probe_gpu()
     cpu_pct, disk_free_gb = probe_cpu_disk()
     return HardwareSnapshot(gpu=gpu, cpu_pct=cpu_pct, disk_free_gb=disk_free_gb)
+
+
+def get_ssh_telemetry() -> str:
+    """Extract SSH auth logs for anomaly detection."""
+    try:
+        raw = subprocess.check_output(
+            ["journalctl", "-u", "ssh", "-n", "50", "--no-pager"],
+            text=True,
+            timeout=5,
+        )
+        return raw.strip()
+    except Exception as e:
+        log.warning(f"> HARDWARE: SSH telemetry probe failed: {e}")
+        return ""

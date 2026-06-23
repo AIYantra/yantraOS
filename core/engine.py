@@ -29,7 +29,7 @@ except ImportError:
     _SDNOTIFY_AVAILABLE = False
 
 from .prompt import get_system_prompt, get_safety_context
-from .hardware import probe_gpu, probe_cpu_disk
+from .hardware import probe_gpu, probe_cpu_disk, get_ssh_telemetry
 from .hybrid_router import (
     select_model_group, stream_complete, INFERENCE_TIMEOUT_SECS,
     detect_hardware_capability, InferenceAuthError,
@@ -131,6 +131,7 @@ class KriyaState:
     pending_actions: TrackedActionQueue = field(default_factory=TrackedActionQueue)
     consecutive_failures: int = 0
     conversation_history: list[dict[str, str]] = field(default_factory=list)
+    ssh_auth_logs: str = ""
 
 
 # ── Config ────────────────────────────────────────────────────────
@@ -200,6 +201,8 @@ class KriyaLoopEngine:
         self._state.disk_free_gb = disk_free_gb
 
         self._state.vram_allocation_mb = int(self._state.vram_used_gb * 1024)
+        
+        self._state.ssh_auth_logs = get_ssh_telemetry()
 
         msg = (
             f"> TELEMETRY: VRAM {self._state.vram_used_gb:.1f}/"
@@ -226,6 +229,7 @@ class KriyaLoopEngine:
             },
             "active_model": self._state.active_model,
             "inference_routing": self._state.inference_routing,
+            "ssh_auth_logs": self._state.ssh_auth_logs,
         }
 
         user_content = json.dumps({
