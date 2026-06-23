@@ -424,7 +424,18 @@ class KriyaLoopEngine:
 
             script = action.get("script")
 
-            if script and sandbox.is_operational:
+            if action_type in {
+                "SYSTEM_UPDATE", "RESTART_DAEMON", "ENABLE_DAEMON", "DISABLE_DAEMON",
+                "STOP_DAEMON", "PRUNE_SNAPSHOTS", "SYNC_CLOCK", "RELOAD_DAEMON_CONFIGS", "BLOCK_IP"
+            }:
+                target = action.get("target", "")
+                if not target and action.get("script"):
+                    import re
+                    ip_match = re.search(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b', action.get("script", ""))
+                    if ip_match:
+                        target = ip_match.group(0)
+                await self._send_host_intent(action_type, target)
+            elif script and sandbox.is_operational:
                 sandbox_result = await sandbox.execute(script)
                 log_execution(script, sandbox_result)
                 stdout_text = (sandbox_result.stdout or "").strip()
@@ -460,12 +471,6 @@ class KriyaLoopEngine:
                     log.critical("> CRITICAL: Circuit Breaker Triggered. Hallucination spiral detected. Flushing cognitive context.")
                     self._state.conversation_history.clear()
                     self._state.consecutive_failures = 0
-            elif action_type in {
-                "SYSTEM_UPDATE", "RESTART_DAEMON", "ENABLE_DAEMON", "DISABLE_DAEMON",
-                "STOP_DAEMON", "PRUNE_SNAPSHOTS", "SYNC_CLOCK", "RELOAD_DAEMON_CONFIGS", "BLOCK_IP"
-            }:
-                target = action.get("target", "")
-                await self._send_host_intent(action_type, target)
             else:
                 if script and not sandbox.is_operational:
                     log.warning(
