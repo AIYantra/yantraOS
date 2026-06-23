@@ -13,5 +13,7 @@ services:
     volumes:
       # Sibling-container execution (CRITICAL)
       - /var/run/docker.sock:/var/run/docker.sock
+      # UNIX Domain Socket for host executor intents
+      - /run/yantra:/run/yantra
       # Persistent audit log mounting
       - ./yantra_logs:/var/log/yantra

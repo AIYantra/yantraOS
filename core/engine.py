@@ -455,6 +455,12 @@ class KriyaLoopEngine:
                     log.critical("> CRITICAL: Circuit Breaker Triggered. Hallucination spiral detected. Flushing cognitive context.")
                     self._state.conversation_history.clear()
                     self._state.consecutive_failures = 0
+            elif action_type in {
+                "SYSTEM_UPDATE", "RESTART_DAEMON", "ENABLE_DAEMON", "DISABLE_DAEMON",
+                "STOP_DAEMON", "PRUNE_SNAPSHOTS", "SYNC_CLOCK", "RELOAD_DAEMON_CONFIGS", "BLOCK_IP"
+            }:
+                target = action.get("target", "")
+                await self._send_host_intent(action_type, target)
             else:
                 if script and not sandbox.is_operational:
                     log.warning(
@@ -463,6 +469,41 @@ class KriyaLoopEngine:
                     )
                 else:
                     log.info(f"> ACTION: {action_type} — logged")
+
+    async def _send_host_intent(self, intent: str, target: str) -> None:
+        sock_path = "/run/yantra/executor.sock"
+        log.info(f"> SYSTEM: Sending intent '{intent}' to Host Executor at {sock_path} (target='{target}')")
+        try:
+            reader, writer = await asyncio.open_unix_connection(sock_path)
+            payload = json.dumps({"intent": intent, "target": target}) + "\n"
+            writer.write(payload.encode("utf-8"))
+            await writer.drain()
+            
+            response_bytes = await asyncio.wait_for(reader.readline(), timeout=310.0)
+            if response_bytes:
+                response = json.loads(response_bytes.decode("utf-8"))
+                status = response.get("status", "UNKNOWN")
+                if status == "SUCCESS":
+                    log.info(f"> SYSTEM: Host Executor completed '{intent}' SUCCESSFULLY.")
+                    self._state.consecutive_failures = 0
+                else:
+                    err = response.get("error", "Unknown error")
+                    log.warning(f"> ERROR: Host Executor '{intent}' {status}: {err}")
+                    self._state.consecutive_failures += 1
+                    self._state.conversation_history.append({
+                        "role": "user",
+                        "content": f"Host Executor Action '{intent}' failed. Status: {status}, Error: {err}"
+                    })
+            
+            writer.close()
+            await writer.wait_closed()
+        except Exception as exc:
+            log.error(f"> ERROR: Failed to communicate with Host Executor: {exc}")
+            self._state.consecutive_failures += 1
+            self._state.conversation_history.append({
+                "role": "user",
+                "content": f"Failed to communicate with Host Executor socket for action '{intent}': {exc}"
+            })
 
 
     # ── Main Loop ──────────────────────────────────────────────────
