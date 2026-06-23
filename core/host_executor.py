@@ -578,13 +578,17 @@ async def _run_server() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
 
     # ── Serve until stop ──────────────────────────────────────────────
-    async with server:
-        await stop_event.wait()
-
-    # ── Cleanup ───────────────────────────────────────────────────────
-    log.info("> EXECUTOR: Server stopped. Cleaning up socket.")
-    if socket_path.exists():
-        socket_path.unlink()
+    try:
+        async with server:
+            await stop_event.wait()
+    except asyncio.CancelledError:
+        log.info("> EXECUTOR: CancelledError caught. Shutting down gracefully.")
+    finally:
+        log.info("> EXECUTOR: Server stopped. Cleaning up socket.")
+        server.close()
+        await server.wait_closed()
+        if os.path.exists('/run/yantra/executor.sock'):
+            os.unlink('/run/yantra/executor.sock')
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────

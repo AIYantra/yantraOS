@@ -40,6 +40,11 @@ def _build_router() -> Any:
     except ImportError as exc:
         raise RuntimeError("litellm is not installed.") from exc
 
+    if os.environ.get("DEEPSEEK_API_KEY"):
+        os.environ["OPENAI_API_KEY"] = os.environ.get("DEEPSEEK_API_KEY")
+    if os.environ.get("DEEPSEEK_API_BASE"):
+        os.environ["OPENAI_API_BASE"] = os.environ.get("DEEPSEEK_API_BASE")
+
     litellm.suppress_debug_info = True
     litellm.set_verbose = False
 
