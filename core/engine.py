@@ -202,7 +202,7 @@ class KriyaLoopEngine:
 
         self._state.vram_allocation_mb = int(self._state.vram_used_gb * 1024)
         
-        self._state.ssh_auth_logs = get_ssh_telemetry()
+        self._state.ssh_auth_logs = await get_ssh_telemetry()
 
         msg = (
             f"> TELEMETRY: VRAM {self._state.vram_used_gb:.1f}/"

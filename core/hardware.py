@@ -13,6 +13,7 @@ Returns a strict capability state:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -296,15 +297,28 @@ def probe_all() -> HardwareSnapshot:
     return HardwareSnapshot(gpu=gpu, cpu_pct=cpu_pct, disk_free_gb=disk_free_gb)
 
 
-def get_ssh_telemetry() -> str:
+async def get_ssh_telemetry() -> str:
     """Extract SSH auth logs for anomaly detection."""
     try:
-        raw = subprocess.check_output(
-            ["journalctl", "-u", "ssh", "-n", "50", "--no-pager"],
-            text=True,
-            timeout=5,
+        proc = await asyncio.create_subprocess_exec(
+            "journalctl", "-u", "ssh", "-n", "100", "--no-pager",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
-        return raw.strip()
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        
+        raw = stdout.decode("utf-8", errors="replace")
+        raw = raw.replace("\x00", "")
+        
+        # clamp tail to last 3000 chars
+        return raw[-3000:].strip()
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        log.warning("> HARDWARE: SSH telemetry probe timed out")
+        return ""
     except Exception as e:
         log.warning(f"> HARDWARE: SSH telemetry probe failed: {e}")
         return ""

@@ -4,7 +4,7 @@ YantraOS — Hybrid Cognitive Router (Headless MVP - Cloud Only)
 Instantiates a LiteLLM Router hardcoded to the CLOUD_ONLY pathway using Azure OpenAI.
 
 Fallback chain:
-  Primary: azure/gpt-5.4-mini
+  Primary: azure/deepseek-v4-flash
 """
 
 from __future__ import annotations
@@ -47,12 +47,11 @@ def _build_router() -> Any:
 
     model_list: list[dict[str, Any]] = [
         {
-            "model_name": "azure/gpt-5.4-mini",
+            "model_name": "azure/deepseek-v4-flash",
             "litellm_params": {
-                "model": "azure/gpt-5.4-mini",
-                "api_key": os.environ.get("AZURE_API_KEY", ""),
-                "api_base": os.environ.get("AZURE_API_BASE", ""),
-                "api_version": os.environ.get("AZURE_API_VERSION", "2024-02-15-preview"),
+                "model": "openai/DeepSeek-V4-Flash",
+                "api_key": os.environ.get("DEEPSEEK_API_KEY", ""),
+                "api_base": os.environ.get("DEEPSEEK_API_BASE", ""),
                 "timeout": _CLOUD_REQUEST_TIMEOUT_SECS,
                 "stream": True,
             },
@@ -91,7 +90,7 @@ def detect_hardware_capability() -> str:
 async def complete(
     messages: list[dict[str, str]],
     *,
-    model: str = "azure/gpt-5.4-mini",
+    model: str = "azure/deepseek-v4-flash",
     timeout: float = INFERENCE_TIMEOUT_SECS,
     stream: bool = False,
 ) -> str | Any:
@@ -145,7 +144,7 @@ async def complete(
 async def stream_complete(
     messages: list[dict[str, str]],
     *,
-    model: str = "azure/gpt-5.4-mini",
+    model: str = "azure/deepseek-v4-flash",
     timeout: float = INFERENCE_TIMEOUT_SECS,
 ) -> AsyncIterator[str]:
     response = await complete(messages, model=model, timeout=timeout, stream=True)
@@ -170,4 +169,4 @@ async def stream_complete(
 
 
 def select_model_group(vram_total_gb: float, vram_used_gb: float) -> str:
-    return "azure/gpt-5.4-mini"
+    return "azure/deepseek-v4-flash"

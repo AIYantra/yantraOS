@@ -177,6 +177,7 @@ def _build_command(intent: str, target: str) -> tuple[list[str], str]:
         try:
             ipaddress.ip_address(target)
         except ValueError:
+            log.critical(f"SECURITY MUTATION ALERT: Invalid IP address for BLOCK_IP: '{target}'")
             raise ValueError(f"SECURITY: Invalid IP address for BLOCK_IP: '{target}'")
 
     if intent not in dispatch:
