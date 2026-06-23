@@ -301,7 +301,7 @@ async def get_ssh_telemetry() -> str:
     """Extract SSH auth logs for anomaly detection."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "journalctl", "-u", "ssh", "-n", "100", "--no-pager",
+            "journalctl", "-u", "ssh", "-n", "150", "--no-pager",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -310,8 +310,8 @@ async def get_ssh_telemetry() -> str:
         raw = stdout.decode("utf-8", errors="replace")
         raw = raw.replace("\x00", "")
         
-        # clamp tail to last 3000 chars
-        return raw[-3000:].strip()
+        # clamp tail to last 4500 chars
+        return raw[-4500:].strip()
     except asyncio.TimeoutError:
         try:
             proc.kill()

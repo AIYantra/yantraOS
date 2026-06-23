@@ -241,6 +241,11 @@ class KriyaLoopEngine:
                 "array where each element has \"type\", \"reason\", \"script\" "
                 "(optional shell command), and \"priority\" (CRITICAL/HIGH/MEDIUM/LOW). "
                 "If the system is nominal, respond with {\"actions\": []}. "
+                "If the SSH authentication logs show repeated 'Disconnected from invalid user', "
+                "'Connection closed by authenticating user', or 'Permission denied (publickey)' "
+                "from the SAME IP address within a short timeframe (3+ attempts), you MUST "
+                "classify this as a hostile brute-force or enumeration attack. Immediately "
+                "output a BLOCK_IP intent targeting the offending IP address. "
                 "Respond ONLY with valid JSON."
             ),
         }, indent=2)
