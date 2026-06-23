@@ -129,6 +129,8 @@ class KriyaState:
     context_window_tokens: int = 0
 
     pending_actions: TrackedActionQueue = field(default_factory=TrackedActionQueue)
+    consecutive_failures: int = 0
+    conversation_history: list[dict[str, str]] = field(default_factory=list)
 
 
 # ── Config ────────────────────────────────────────────────────────
@@ -239,10 +241,11 @@ class KriyaLoopEngine:
             ),
         }, indent=2)
 
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": self._system_prompt},
-            {"role": "user", "content": user_content},
-        ]
+        if not self._state.conversation_history:
+            self._state.conversation_history.append({"role": "system", "content": self._system_prompt})
+
+        self._state.conversation_history.append({"role": "user", "content": user_content})
+        messages: list[dict[str, str]] = list(self._state.conversation_history)
 
         accumulated_response = ""
         inference_start = time.monotonic()
@@ -357,6 +360,9 @@ class KriyaLoopEngine:
                             "script": action.get("script"),
                             "priority": action.get("priority", "MEDIUM"),
                         })
+                
+                self._state.conversation_history.append({"role": "assistant", "content": cleaned})
+                
                 log.info(
                     f"> REASONING: LLM proposed "
                     f"{len(self._state.pending_actions)} action(s)."
@@ -424,8 +430,14 @@ class KriyaLoopEngine:
                 
                 if sandbox_result.exit_code == 0:
                     log.info(f"> SYSTEM: Autonomous Action '{action_type}' COMPLETED SUCCESSFULLY.")
+                    self._state.consecutive_failures = 0
                 else:
                     log.warning(f"> ERROR: Action '{action_type}' FAILED. Escalating stderr to LLM context for self-healing retry...")
+                    self._state.consecutive_failures += 1
+                    self._state.conversation_history.append({
+                        "role": "user",
+                        "content": f"Action '{action_type}' failed with exit code {sandbox_result.exit_code}. Stderr: {stderr_text}"
+                    })
 
                 if stdout_text:
                     for line in stdout_text[:2000].splitlines():
@@ -434,6 +446,11 @@ class KriyaLoopEngine:
                 if stderr_text:
                     for line in stderr_text[:1000].splitlines():
                         log.info(f"> STDERR: {line}")
+
+                if self._state.consecutive_failures >= 5:
+                    log.critical("> CRITICAL: Circuit Breaker Triggered. Hallucination spiral detected. Flushing cognitive context.")
+                    self._state.conversation_history.clear()
+                    self._state.consecutive_failures = 0
             else:
                 if script and not sandbox.is_operational:
                     log.warning(
