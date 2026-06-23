@@ -40,10 +40,17 @@ def _build_router() -> Any:
     except ImportError as exc:
         raise RuntimeError("litellm is not installed.") from exc
 
-    if os.environ.get("DEEPSEEK_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = os.environ.get("DEEPSEEK_API_KEY")
-    if os.environ.get("DEEPSEEK_API_BASE"):
-        os.environ["OPENAI_API_BASE"] = os.environ.get("DEEPSEEK_API_BASE")
+    secrets_path = "/etc/yantra/host_secrets.env"
+    if os.path.exists(secrets_path):
+        with open(secrets_path, "r") as f:
+            for line in f:
+                if "=" in line and not line.startswith("#"):
+                    key, val = line.strip().split("=", 1)
+                    os.environ[key] = val
+                    if key == "DEEPSEEK_API_KEY":
+                        os.environ["OPENAI_API_KEY"] = val
+                    if key == "DEEPSEEK_API_BASE":
+                        os.environ["OPENAI_API_BASE"] = val
 
     litellm.suppress_debug_info = True
     litellm.set_verbose = False

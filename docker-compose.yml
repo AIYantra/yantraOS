@@ -17,5 +17,7 @@ services:
       - /run/yantra:/run/yantra
       # Host secrets for API tokens
       - /etc/yantra/host_secrets.env:/etc/yantra/host_secrets.env:ro
+      # Host auth log for brute-force detection
+      - /var/log/auth.log:/host_log/auth.log:ro
       # Persistent audit log mounting
       - ./yantra_logs:/var/log/yantra

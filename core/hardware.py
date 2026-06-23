@@ -301,7 +301,7 @@ async def get_ssh_telemetry() -> str:
     """Extract SSH auth logs for anomaly detection."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "journalctl", "-u", "ssh", "-n", "150", "--no-pager",
+            "tail", "-n", "150", "/host_log/auth.log",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
