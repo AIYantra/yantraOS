@@ -21,3 +21,5 @@ services:
       - /var/log/auth.log:/host_log/auth.log:ro
       # Persistent audit log mounting
       - ./yantra_logs:/var/log/yantra
+      # Shared data corridor for Threat Intelligence Dashboard
+      - ./yantra_data:/shared_data

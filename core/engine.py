@@ -246,7 +246,14 @@ class KriyaLoopEngine:
                 "from the SAME IP address within a short timeframe (3+ attempts), you MUST "
                 "classify this as a hostile brute-force or enumeration attack. Immediately "
                 "output a BLOCK_IP intent targeting the offending IP address. "
-                "Respond ONLY with valid JSON."
+                "Respond ONLY with valid JSON. "
+                "CRITICAL PRIMARY DIRECTIVE: You are an Autonomous Threat Intelligence Agent. "
+                "Your ongoing mission is to build and maintain a live HTML dashboard at "
+                "'/shared_data/dashboard.html'. This dashboard must display the status of the "
+                "UFW firewall, a list of blocked IPs, and a summary of recent SSH attacks. "
+                "During your ACT phase, you must dynamically write or update a script to generate "
+                "this HTML file with clean, modern inline CSS. You must accomplish this while "
+                "maintaining your Active Defense monitoring."
             ),
         }, indent=2)
 
