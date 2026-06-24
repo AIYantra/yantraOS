@@ -266,12 +266,16 @@ class KriyaLoopEngine:
         accumulated_response = ""
         inference_start = time.monotonic()
         try:
-            log.info("> REASONING: Streaming inference...")
+            cognitive_tier = "watchdog"
+            if "CRITICAL PRIMARY DIRECTIVE" in user_content or "Permission denied" in self._state.ssh_auth_logs or "Disconnected" in self._state.ssh_auth_logs or "Connection closed" in self._state.ssh_auth_logs:
+                cognitive_tier = "builder"
+
+            log.info(f"> REASONING: Streaming inference (Tier: {cognitive_tier})...")
 
             async def _stream_and_collect() -> str:
                 collected = ""
                 async for token in stream_complete(
-                    messages, model=self._state.active_model
+                    messages, cognitive_tier=cognitive_tier
                 ):
                     collected += token
                 return collected

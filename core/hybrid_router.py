@@ -68,6 +68,16 @@ def _build_router() -> Any:
                 "stream": True,
             },
         },
+        {
+            "model_name": "local/deepseek-v4",
+            "litellm_params": {
+                "model": "openai/deepseek-v4",
+                "api_key": os.environ.get("BUILDER_API_KEY", "dummy"),
+                "api_base": os.environ.get("BUILDER_API_BASE", "http://host.docker.internal:8000/v1"),
+                "timeout": 120,
+                "stream": True,
+            },
+        },
     ]
 
     fallbacks = []
@@ -84,7 +94,7 @@ def _build_router() -> Any:
         set_verbose=False,
     )
 
-    log.info("> ROUTER: LiteLLM Router initialized (CLOUD_ONLY)")
+    log.info("> ROUTER: LiteLLM Router initialized (Hybrid Tiered)")
     return router
 
 
@@ -102,7 +112,7 @@ def detect_hardware_capability() -> str:
 async def complete(
     messages: list[dict[str, str]],
     *,
-    model: str = "azure/deepseek-v4-flash",
+    cognitive_tier: str = "watchdog",
     timeout: float = INFERENCE_TIMEOUT_SECS,
     stream: bool = False,
 ) -> str | Any:
@@ -110,7 +120,12 @@ async def complete(
     t_start = time.monotonic()
     loop = asyncio.get_running_loop()
 
-    log.info(f"> ROUTER: Routing inference → model_group={model} timeout={timeout}s")
+    if cognitive_tier == "builder":
+        model = "local/deepseek-v4"
+    else:
+        model = "azure/deepseek-v4-flash"
+
+    log.info(f"> ROUTER: Routing inference → tier={cognitive_tier} model_group={model} timeout={timeout}s")
 
     try:
         _call = functools.partial(
@@ -156,10 +171,10 @@ async def complete(
 async def stream_complete(
     messages: list[dict[str, str]],
     *,
-    model: str = "azure/deepseek-v4-flash",
+    cognitive_tier: str = "watchdog",
     timeout: float = INFERENCE_TIMEOUT_SECS,
 ) -> AsyncIterator[str]:
-    response = await complete(messages, model=model, timeout=timeout, stream=True)
+    response = await complete(messages, cognitive_tier=cognitive_tier, timeout=timeout, stream=True)
     loop = asyncio.get_running_loop()
     _SENTINEL: object = object()
 

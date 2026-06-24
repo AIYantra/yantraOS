@@ -297,28 +297,28 @@ def probe_all() -> HardwareSnapshot:
     return HardwareSnapshot(gpu=gpu, cpu_pct=cpu_pct, disk_free_gb=disk_free_gb)
 
 
+_auth_log_position: int = 0
+
 async def get_ssh_telemetry() -> str:
     """Extract SSH auth logs for anomaly detection."""
+    global _auth_log_position
+    log_path = "/host_log/auth.log"
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "tail", "-n", "150", "/host_log/auth.log",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        
-        raw = stdout.decode("utf-8", errors="replace")
-        raw = raw.replace("\x00", "")
-        
-        # clamp tail to last 4500 chars
+        if not os.path.exists(log_path):
+            return ""
+            
+        file_size = os.path.getsize(log_path)
+        if file_size < _auth_log_position:
+            _auth_log_position = 0
+            
+        with open(log_path, "rb") as f:
+            f.seek(_auth_log_position)
+            data = f.read()
+            _auth_log_position = f.tell()
+            
+        raw = data.decode("utf-8", errors="replace").replace("\x00", "")
+        # clamp tail to last 4500 chars to prevent massive context dumps
         return raw[-4500:].strip()
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        log.warning("> HARDWARE: SSH telemetry probe timed out")
-        return ""
     except Exception as e:
         log.warning(f"> HARDWARE: SSH telemetry probe failed: {e}")
         return ""
