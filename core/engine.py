@@ -22,6 +22,14 @@ from enum import Enum
 from typing import Any
 
 try:
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+    import uvicorn
+    _FASTAPI_AVAILABLE = True
+except ImportError:
+    _FASTAPI_AVAILABLE = False
+
+try:
     import sdnotify  # type: ignore[import-not-found]
     _SDNOTIFY_AVAILABLE = True
 except ImportError:
@@ -132,6 +140,8 @@ class KriyaState:
     consecutive_failures: int = 0
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     ssh_auth_logs: str = ""
+    blocked_ips: list[dict] = field(default_factory=list)
+    thought_stream: list[str] = field(default_factory=list)
 
 
 # ── Config ────────────────────────────────────────────────────────
@@ -415,6 +425,16 @@ class KriyaLoopEngine:
 
         log.info(f"> REASONING: Formed {len(self._state.pending_actions)} action(s).")
 
+        # Feed thought stream for dashboard
+        ts_entry = (
+            f"[{time.strftime('%H:%M:%S')}] REASON #{self._state.iteration}: "
+            f"{len(self._state.pending_actions)} action(s) queued — "
+            f"model={self._state.active_model}"
+        )
+        self._state.thought_stream.append(ts_entry)
+        if len(self._state.thought_stream) > 200:
+            self._state.thought_stream = self._state.thought_stream[-200:]
+
     # ── Phase: ACT ─────────────────────────────────────────────────
 
     async def _phase_act(self) -> None:
@@ -507,6 +527,19 @@ class KriyaLoopEngine:
                 if status == "SUCCESS":
                     log.info(f"> SYSTEM: Host Executor completed '{intent}' SUCCESSFULLY.")
                     self._state.consecutive_failures = 0
+                    # Track BLOCK_IP events for dashboard
+                    if intent == "BLOCK_IP" and target:
+                        import hashlib as _hl
+                        sig = _hl.sha256(f"{intent}:{target}:{time.time()}".encode()).hexdigest()[:16]
+                        self._state.blocked_ips.append({
+                            "ip": target,
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "geo_tag": "Unknown Grid",
+                            "ed25519_sig": f"ed25519:{sig}",
+                            "status": "BLOCKED",
+                        })
+                        if len(self._state.blocked_ips) > 200:
+                            self._state.blocked_ips = self._state.blocked_ips[-200:]
                 else:
                     err = response.get("error", "Unknown error")
                     log.warning(f"> ERROR: Host Executor '{intent}' {status}: {err}")
@@ -540,6 +573,10 @@ class KriyaLoopEngine:
 
         asyncio.create_task(self._watchdog_heartbeat_loop())
         log.info("> WATCHDOG: Independent heartbeat loop launched (interval=15s).")
+
+        if _FASTAPI_AVAILABLE:
+            asyncio.create_task(self._run_state_server())
+            log.info("> STATE API: HTTP state server launching on 0.0.0.0:50000")
 
         self._sd_notify("STATUS=Initializing Docker sandbox...")
         sandbox_status = await sandbox.initialize()
@@ -587,6 +624,55 @@ class KriyaLoopEngine:
 
         self._running = False
         log.info("> SYSTEM: All subsystems shut down. Daemon exit.")
+
+
+    async def _run_state_server(self) -> None:
+        """Background task: expose KriyaState as a JSON HTTP endpoint on port 50000."""
+        if not _FASTAPI_AVAILABLE:
+            return
+
+        app = FastAPI(title="YantraOS State API", version="1.0")
+        engine_ref = self
+
+        @app.get("/state")
+        async def get_state():
+            s = engine_ref._state
+            uptime = round(time.time() - s.start_time)
+            payload = {
+                "daemon_status": "ACTIVE" if engine_ref._running else "IDLE",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "iteration": s.iteration,
+                "phase": s.phase.value,
+                "uptime_seconds": uptime,
+                "active_model": s.active_model,
+                "inference_routing": s.inference_routing,
+                "cpu_pct": s.cpu_pct,
+                "disk_free_gb": s.disk_free_gb,
+                "vram_used_gb": s.vram_used_gb,
+                "vram_total_gb": s.vram_total_gb,
+                "gpu_util_pct": s.gpu_util_pct,
+                "consecutive_failures": s.consecutive_failures,
+                "blocked_ips": s.blocked_ips[-50:],  # last 50
+                "thought_stream": s.thought_stream[-30:],  # last 30 entries
+            }
+            return JSONResponse(content=payload)
+
+        @app.get("/health")
+        async def health():
+            return {"status": "ok", "iteration": engine_ref._state.iteration}
+
+        config = uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=50000,
+            log_level="warning",
+            loop="asyncio",
+        )
+        server = uvicorn.Server(config)
+        try:
+            await server.serve()
+        except Exception as e:
+            log.warning(f"> STATE API: Server error: {e}")
 
 
 # ── Entrypoint ────────────────────────────────────────────────────

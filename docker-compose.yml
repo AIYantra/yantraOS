@@ -23,3 +23,5 @@ services:
       - ./yantra_logs:/var/log/yantra
       # Shared data corridor for Threat Intelligence Dashboard
       - ./yantra_data:/shared_data
+    ports:
+      - "50000:50000"
