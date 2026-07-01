@@ -1,0 +1,187 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# YantraOS — packages.x86_64
+# Master package manifest for the Sovereign ISO build.
+# Each section is annotated with its architectural justification.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Base System ──────────────────────────────────────────────────────────────
+base
+linux
+linux-firmware
+linux-firmware-marvell
+amd-ucode
+intel-ucode
+mkinitcpio
+mkinitcpio-archiso
+mkinitcpio-nfs-utils
+syslinux
+
+# ── Bootloader & Partitioning ───────────────────────────────────────────────
+efibootmgr
+grub
+refind
+dosfstools
+e2fsprogs
+exfatprogs
+f2fs-tools
+gptfdisk
+parted
+squashfs-tools
+
+# ── BTRFS Atomic Substrate (MANDATORY) ──────────────────────────────────────
+# The entire YantraOS recovery architecture depends on BTRFS COW snapshots.
+btrfs-progs
+
+# ── Networking ──────────────────────────────────────────────────────────────
+dhcpcd
+iwd
+openssh
+openvpn
+wireguard-tools
+wpa_supplicant
+nmap
+tcpdump
+bind
+dnsmasq
+ethtool
+ldns
+ndisc6
+nfs-utils
+open-iscsi
+openconnect
+ppp
+pptpclient
+rsync
+vpnc
+wvdial
+wireless-regdb
+wireless_tools
+xl2tpd
+
+# ── Firewall (Active Defense Layer) ─────────────────────────────────────────
+ufw
+
+# ── Docker (Sandbox Execution Engine) ───────────────────────────────────────
+# The Kriya Loop executes ALL untrusted LLM-generated scripts inside
+# ephemeral Docker containers with --cap-drop=ALL --read-only --network=none.
+docker
+docker-compose
+
+# ── Python Runtime (Kriya Loop Daemon) ──────────────────────────────────────
+# System Python + pip for bootstrapping the isolated /opt/yantra/venv.
+python
+python-pip
+python-setuptools
+
+# ── GPU Telemetry & Inference Dependencies ──────────────────────────────────
+# pynvml: NVIDIA VRAM/utilization/thermal probing via hardware.py
+# ROCm users will install rocm-smi via AUR post-install.
+nvidia-utils
+
+# ── System Monitoring (SENSE Phase Probes) ──────────────────────────────────
+lm_sensors
+smartmontools
+dmidecode
+hdparm
+lsscsi
+nvme-cli
+pv
+sdparm
+
+# ── Arch Installation & Recovery Tools ──────────────────────────────────────
+arch-install-scripts
+archinstall
+clonezilla
+ddrescue
+diffutils
+fsarchiver
+gpart
+partclone
+partimage
+testdisk
+
+# ── Shell & Terminal ────────────────────────────────────────────────────────
+zsh
+grml-zsh-config
+tmux
+screen
+vim
+nano
+less
+man-db
+man-pages
+mc
+
+# ── Terminal Emulator Support ───────────────────────────────────────────────
+foot-terminfo
+kitty-terminfo
+rxvt-unicode-terminfo
+terminus-font
+
+# ── Accessibility ───────────────────────────────────────────────────────────
+brltty
+espeakup
+livecd-sounds
+
+# ── Firmware & Drivers ──────────────────────────────────────────────────────
+b43-fwcutter
+broadcom-wl
+sof-firmware
+bolt
+
+# ── Virtualization Guest Support ────────────────────────────────────────────
+hyperv
+open-vm-tools
+qemu-guest-agent
+virtualbox-guest-utils-nox
+
+# ── Cryptography & Security ────────────────────────────────────────────────
+cryptsetup
+libfido2
+openpgp-card-tools
+pcsclite
+sequoia-sq
+tpm2-tools
+tpm2-tss
+
+# ── Miscellaneous Utilities ─────────────────────────────────────────────────
+cloud-init
+darkhttpd
+dmraid
+gpm
+irssi
+iw
+jfsutils
+libusb-compat
+linux-atm
+lvm2
+lynx
+mdadm
+memtest86+
+memtest86+-efi
+mmc-utils
+modemmanager
+mtools
+nbd
+nilfs-utils
+ntfs-3g
+sudo
+systemd-resolvconf
+udftools
+usb_modeswitch
+usbmuxd
+usbutils
+xdg-utils
+xfsprogs
+bcachefs-tools
+edk2-shell
+fatresize
+lftp
+sg3_utils
+alsa-utils
+
+# ── YantraOS Additional Dependencies ───────────────────────────────────────
+# psutil: CPU/RAM/disk telemetry for the SENSE phase (hardware.py)
+# git: Required by litellm for dynamic catalog fetches
+git
+python-psutil
