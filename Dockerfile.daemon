@@ -4,8 +4,9 @@ FROM python:3.12-slim
 # Prevent Python from buffering stdout/stderr
 ENV PYTHONUNBUFFERED=1
 
-# Install docker-py for sibling-container execution, and litellm for the router
-RUN pip install --no-cache-dir docker litellm
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Create log directory
 RUN mkdir -p /var/log/yantra

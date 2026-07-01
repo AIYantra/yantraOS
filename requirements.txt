@@ -6,6 +6,7 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 litellm @ git+https://github.com/BerriAI/litellm.git@d319cd8cc6ecb64d3a0ac3939858a9b91f44281b
 chromadb>=0.5.0
+sentence-transformers>=2.2.2
 sdnotify>=0.3.0
 pynvml>=12.0.0
 psutil>=5.9.0
