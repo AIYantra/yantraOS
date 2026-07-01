@@ -39,6 +39,15 @@ class OllamaEmbeddingFunction:
     Timeouts are strictly bounded to prevent event loop starvation.
     """
 
+    def name(self) -> str:
+        """Required by ChromaDB >= 1.5 embedding function contract."""
+        return "ollama_azure_hybrid"
+
+    @staticmethod
+    def build_from_config(config: dict) -> "OllamaEmbeddingFunction":
+        """Required by ChromaDB >= 1.5 embedding function contract."""
+        return OllamaEmbeddingFunction()
+
     def __call__(self, input: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of texts."""
         # --- PRIMARY: Ollama local path ---
