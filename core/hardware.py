@@ -317,8 +317,8 @@ async def get_ssh_telemetry() -> str:
             _auth_log_position = f.tell()
             
         raw = data.decode("utf-8", errors="replace").replace("\x00", "")
-        # clamp tail to last 4500 chars to prevent massive context dumps
-        return raw[-4500:].strip()
+        # Expand clamp to 1.5M chars (~375k tokens) to leverage the gpt-5.4-mini 400k context window
+        return raw[-1500000:].strip()
     except Exception as e:
         log.warning(f"> HARDWARE: SSH telemetry probe failed: {e}")
         return ""

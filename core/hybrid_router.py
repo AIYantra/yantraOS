@@ -59,11 +59,12 @@ def _build_router() -> Any:
 
     model_list: list[dict[str, Any]] = [
         {
-            "model_name": "azure/deepseek-v4-flash",
+            "model_name": "azure/gpt-5.4-mini",
             "litellm_params": {
-                "model": "openai/DeepSeek-V4-Flash",
-                "api_key": os.environ.get("DEEPSEEK_API_KEY", ""),
-                "api_base": os.environ.get("DEEPSEEK_API_BASE", ""),
+                "model": "azure/gpt-5.4-mini",
+                "api_key": os.environ.get("AZURE_OPENAI_API_KEY", ""),
+                "api_base": os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+                "api_version": os.environ.get("AZURE_OPENAI_API_VERSION", "2026-03-17"),
                 "timeout": _CLOUD_REQUEST_TIMEOUT_SECS,
                 "stream": True,
             },
@@ -80,7 +81,10 @@ def _build_router() -> Any:
         },
     ]
 
-    fallbacks = []
+    fallbacks = [
+        {"model": "gemini/gemini-2.0-flash"},
+        {"model": "anthropic/claude-3-5-sonnet"}
+    ]
 
     router = Router(
         model_list=model_list,
@@ -123,7 +127,7 @@ async def complete(
     if cognitive_tier == "builder":
         model = "local/deepseek-v4"
     else:
-        model = "azure/deepseek-v4-flash"
+        model = "azure/gpt-5.4-mini"
 
     log.info(f"> ROUTER: Routing inference → tier={cognitive_tier} model_group={model} timeout={timeout}s")
 
@@ -196,4 +200,4 @@ async def stream_complete(
 
 
 def select_model_group(vram_total_gb: float, vram_used_gb: float) -> str:
-    return "azure/deepseek-v4-flash"
+    return "azure/gpt-5.4-mini"
