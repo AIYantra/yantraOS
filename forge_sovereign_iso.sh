@@ -289,24 +289,13 @@ stage_secrets() {
 # fails; without /var/lib/yantra, yantra.service namespace setup panics with
 # status=226/NAMESPACE before the binary runs.
 #
-# RC3-KIOSK EXTENSION:
-#   Wire the Wayland Kiosk (cage + chromium) into the boot sequence:
-#     1. Package manifest: cage, chromium, mesa, seatd, wlroots, xdg-desktop-portal
-#     2. getty@tty1 autologin drop-in for yantra_user (no display manager)
-#     3. .bash_profile: TTY1 detection → wait for :50000 → exec cage + chromium
-#   The sysusers.d/yantra.conf already declares yantra_user in video+render
-#   groups for DRM/KMS access. We scaffold the filesystem hooks here.
+# MILESTONE 7 — PURE TUI ARCHITECTURE:
+#   Wire the Yantra Shell (tui_shell.py) into the boot sequence:
+#     1. getty@tty1 autologin drop-in for yantra_user (no display manager)
+#     2. .bash_profile: TTY1 detection → wait for daemon → exec tui_shell.py
+#   No Wayland, no cage, no chromium, no seatd. TTY-only.
 scaffold_identity_and_fs() {
   log_info "── scaffold_identity_and_fs ──"
-
-  # ── Wayland Kiosk packages ───────────────────────────────────────────────
-  # cage: minimal Wayland compositor (single-application kiosk)
-  # chromium: kiosk browser targeting the local HUD on :50000
-  # mesa: GPU userspace drivers (DRM/KMS rendering)
-  # seatd: seat management daemon (rootless Wayland compositor launch)
-  # wlroots: Wayland compositor library (cage dependency)
-  ensure_packages cage chromium mesa seatd wlroots xdg-desktop-portal
-  log_ok "Wayland Kiosk packages added to ISO manifest."
 
   # ── Live-USB home (explicit 1000:1000 ownership for PAM autologin) ──────
   install -dm700 "${AIROOTFS}/home/yantra_user"
@@ -326,7 +315,7 @@ scaffold_identity_and_fs() {
 
   # ── getty@tty1 autologin drop-in ─────────────────────────────────────────
   # Bypasses the login prompt on TTY1: agetty auto-authenticates as
-  # yantra_user, whose .bash_profile then launches the Wayland compositor.
+  # yantra_user, whose .bash_profile then launches the Yantra TUI Shell.
   # Quoted heredoc ('GETTYEOF') prevents variable expansion — %I and $TERM
   # are systemd specifiers that must survive the ISO build verbatim.
   local getty_dropin="${AIROOTFS}/etc/systemd/system/getty@tty1.service.d"
@@ -339,33 +328,33 @@ GETTYEOF
   chmod 644 "${getty_dropin}/autologin.conf"
   log_ok "getty@tty1 autologin drop-in installed (yantra_user)."
 
-  # ── .bash_profile — Wayland Kiosk launcher ───────────────────────────────
+  # ── .bash_profile — Pure TUI Shell Launcher ──────────────────────────────
   # Activates ONLY on /dev/tty1 (SSH sessions are unaffected).
   # Sequence:
   #   1. Detect TTY1 via $(tty)
   #   2. Spin-wait for the YantraOS IPC server on http://127.0.0.1:50000
   #      (max 120 iterations × 1s = 2 minute timeout; the daemon starts
   #       asynchronously via yantra.service)
-  #   3. exec cage → replaces the shell process with the Wayland compositor,
-  #      running chromium in kiosk+incognito mode pointing at the local HUD
+  #   3. exec replaces the shell process with the Yantra TUI Shell,
+  #      running under the venv Python interpreter.
   #
   # CRITICAL: Quoted heredoc ('PROFILEEOF') ensures ZERO variable expansion
   # during ISO compilation. Every $, backtick, and special char is written
   # literally into the target file.
   local bash_profile="${AIROOTFS}/home/yantra_user/.bash_profile"
   cat > "${bash_profile}" <<'PROFILEEOF'
-# YantraOS Wayland Kiosk Launcher
+# YantraOS — Pure TUI Shell Launcher
 # Activates only on TTY1 — SSH/serial sessions drop to normal shell.
 
 if [ "$(tty)" = "/dev/tty1" ]; then
-  echo "[YantraOS] Kiosk mode detected on TTY1."
-  echo "[YantraOS] Waiting for IPC server on port 50000..."
+  echo "[YantraOS] TUI Shell mode detected on TTY1."
+  echo "[YantraOS] Waiting for Kriya Loop daemon on port 50000..."
 
   _yantra_attempts=0
   _yantra_max=120
   while [ "$_yantra_attempts" -lt "$_yantra_max" ]; do
     if curl -sf -o /dev/null http://127.0.0.1:50000/health 2>/dev/null; then
-      echo "[YantraOS] IPC server ready. Launching Wayland compositor."
+      echo "[YantraOS] Daemon ready. Launching Yantra Shell."
       break
     fi
     _yantra_attempts=$((_yantra_attempts + 1))
@@ -373,40 +362,18 @@ if [ "$(tty)" = "/dev/tty1" ]; then
   done
 
   if [ "$_yantra_attempts" -ge "$_yantra_max" ]; then
-    echo "[YantraOS] WARNING: IPC server not responding after ${_yantra_max}s."
-    echo "[YantraOS] Launching compositor anyway — HUD will retry via SSE."
+    echo "[YantraOS] WARNING: Daemon not responding after ${_yantra_max}s."
+    echo "[YantraOS] Launching shell anyway — it will retry IPC internally."
   fi
 
-  # XDG_RUNTIME_DIR is mandatory for Wayland compositors; seatd provides
-  # the seat, but the runtime dir must exist under /run/user/<uid>.
-  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-  mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
-
-  # exec replaces the login shell — no orphan bash process. cage exits
-  # cleanly on compositor close, returning to getty (which re-autologins).
-  exec cage -d -- chromium \
-    --kiosk \
-    --incognito \
-    --no-first-run \
-    --disable-translate \
-    --disable-infobars \
-    --disable-suggestions-service \
-    --disable-save-password-bubble \
-    --disable-session-crashed-bubble \
-    --noerrdialogs \
-    --ozone-platform=wayland \
-    http://127.0.0.1:50000
+  # exec replaces the login shell — no orphan bash process. On TUI exit,
+  # agetty re-autologins and relaunches the shell.
+  exec /opt/yantra/venv/bin/python3 /opt/yantra/core/tui_shell.py
 fi
 PROFILEEOF
   chmod 644 "${bash_profile}"
   chown 1000:1000 "${bash_profile}"
-  log_ok ".bash_profile kiosk launcher installed for yantra_user."
-
-  # ── seatd.service — enable seat management for rootless Wayland ──────────
-  # cage requires an active seat; seatd provides this without logind/elogind.
-  local wants="${AIROOTFS}/etc/systemd/system/multi-user.target.wants"
-  ln -sf "/usr/lib/systemd/system/seatd.service" "${wants}/seatd.service"
-  log_info "  ↳ seatd.service enabled."
+  log_ok ".bash_profile TUI launcher installed for yantra_user."
 
   # ── Oneshot live-setup unit ──────────────────────────────────────────────
   # BTRFS nodatacow + hook unmask, ordered Before the daemon, so first boot
@@ -433,7 +400,7 @@ SVCEOF
   chmod 644 "${setup}"
   ln -sf "/etc/systemd/system/yantra-live-setup.service" \
     "${AIROOTFS}/etc/systemd/system/multi-user.target.wants/yantra-live-setup.service"
-  log_ok "Identity + filesystem scaffold complete (with Wayland Kiosk wiring)."
+  log_ok "Identity + filesystem scaffold complete (pure TUI architecture)."
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -490,6 +457,14 @@ inject_kriya_loop() {
   local pip_list="${YANTRA_PIP_PACKAGES[*]}"
   arch-chroot "${VENV_BUILD_DIR}" /bin/bash -s -- "${pip_list}" <<'CHROOT'
 set -euo pipefail
+
+# ── Network Hardening: Force HTTP/1.1 + expand Git buffer ────────────────
+# Default Git/cURL HTTP/2 negotiation collapses inside ephemeral chroot
+# overlays during large VCS clones (pip git+ dependencies). Force HTTP/1.1
+# and expand the postBuffer to 500MB to prevent stream reset errors.
+export GIT_HTTP_VERSION=1.1
+git config --global http.postBuffer 524288000
+
 VENV=/opt/yantra/venv
 PIP_LIST="$1"
 install -dm755 /opt/yantra
