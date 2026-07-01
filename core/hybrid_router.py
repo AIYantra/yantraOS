@@ -100,6 +100,7 @@ def _build_router() -> Any:
     ]
 
     fallbacks = [
+        {"model": "azure/gpt-5.4-mini"},
         {"model": "gemini/gemini-2.0-flash"},
         {"model": "anthropic/claude-3-5-sonnet"}
     ]
