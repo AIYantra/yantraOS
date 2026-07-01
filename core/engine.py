@@ -230,6 +230,15 @@ class KriyaLoopEngine:
         self._state.pending_actions.clear()
         log.info("> DAEMON: [REASON] Analyzing system state...")
 
+        # Context Summarization: Truncate log tail if it exceeds ~2000 tokens
+        ssh_logs = self._state.ssh_auth_logs
+        if len(ssh_logs) > 8000:
+            filtered = [
+                line for line in ssh_logs.splitlines() 
+                if any(flag in line.upper() for flag in ("WARNING", "ERROR", "FATAL"))
+            ]
+            ssh_logs = "\n".join(filtered)[-8000:]
+
         telemetry_context: dict[str, Any] = {
             "schema": "yantraos/telemetry/v1",
             "iteration": self._state.iteration,
@@ -242,7 +251,7 @@ class KriyaLoopEngine:
             },
             "active_model": self._state.active_model,
             "inference_routing": self._state.inference_routing,
-            "ssh_auth_logs": self._state.ssh_auth_logs,
+            "ssh_auth_logs": ssh_logs,
         }
 
         user_content = json.dumps({
@@ -274,6 +283,11 @@ class KriyaLoopEngine:
             self._state.conversation_history.append({"role": "system", "content": self._system_prompt})
 
         self._state.conversation_history.append({"role": "user", "content": user_content})
+        
+        # Prevent context bloat by truncating history (keep system prompt + last 4 messages)
+        if len(self._state.conversation_history) > 5:
+            self._state.conversation_history = [self._state.conversation_history[0]] + self._state.conversation_history[-4:]
+            
         messages: list[dict[str, str]] = list(self._state.conversation_history)
 
         accumulated_response = ""
