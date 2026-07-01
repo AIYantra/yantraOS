@@ -201,9 +201,9 @@ def _execute_preflight_snapshot() -> tuple[bool, str]:
         Tuple of (success: bool, message: str).
     """
     if not Path(SNAPSHOT_BIN).exists():
-        msg = f"WARNING: Snapshot binary not found at {SNAPSHOT_BIN}. Bypassing pre-flight gate for MVP compatibility."
-        log.warning(msg)
-        return True, msg
+        msg = f"FATAL: Snapshot binary not found at {SNAPSHOT_BIN}. Absolute strictness enforced. Mutation blocked."
+        log.critical(msg)
+        return False, msg
 
     try:
         result: subprocess.CompletedProcess[bytes] = subprocess.run(
