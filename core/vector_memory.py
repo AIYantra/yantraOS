@@ -1,479 +1,211 @@
 """
-YantraOS — ChromaDB Persistent Vector Memory
+YantraOS — Vector Memory (Lightweight Embedding Engine)
 Target: /opt/yantra/core/vector_memory.py
-Milestone 2, Task 2.3
 
-Provides the persistent memory layer for the Kriya Loop's one-shot skill
-acquisition system (YANTRA_MASTER_CONTEXT §4.9). Each successful execution
-path is embedded and stored so the daemon can retrieve verified solutions
-before generating new code.
-
-Storage backend: ChromaDB PersistentClient at /var/lib/yantra/chromadb
-  - Ownership: yantra_daemon:yantra (set by systemd-tmpfiles in Milestone 1)
-  - BTRFS +C (nodatacow) attribute applied to the directory — no chown
-    or chattr operations are required or performed in this module.
-
-Non-blocking I/O strategy:
-  - All ChromaDB write operations (add, upsert) are dispatched via
-    asyncio.get_event_loop().run_in_executor(None, ...) to prevent the
-    synchronous ChromaDB client from stalling the async Kriya Loop.
-  - Read operations (query) follow the same pattern for consistency.
-  - The executor uses Python's default ThreadPoolExecutor, which is
-    appropriate for I/O-bound ChromaDB calls. Do NOT use ProcessPoolExecutor —
-    the ChromaDB client is not fork-safe.
-
-Collections:
-  • "execution_logs"  — Action outcomes from the ACT phase (skill acquisition)
-  • "skill_index"     — Installed Skill package metadata for semantic search
-  • "error_patterns"  — Known error signatures for pattern-matched remediation
+Manages the local ChromaDB skill registry. Embedding generation is
+offloaded to Ollama (local) or Azure OpenAI (cloud fallback).
+No PyTorch. No transformers. The daemon stays lean.
 """
 
-from __future__ import annotations
-
-import asyncio
-import hashlib
-import json
+import os
 import logging
-import time
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from functools import partial
-from typing import Any
+import httpx
+import chromadb
 
-log = logging.getLogger("yantra.vector_memory")
+log = logging.getLogger(__name__)
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+CHROMA_PATH = "/shared_data/chroma"
+COLLECTION_NAME = "skill_index"
 
-CHROMA_PATH: str = "/var/lib/yantra/chromadb"
+# Ollama embedding config
+OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
-# Collection names — changing these after first boot requires a migration.
-COLLECTION_EXECUTION_LOGS: str = "execution_logs"
-COLLECTION_SKILL_INDEX: str = "skill_index"
-COLLECTION_ERROR_PATTERNS: str = "error_patterns"
+# Azure OpenAI embedding fallback config
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2026-03-17")
+AZURE_EMBED_DEPLOYMENT = os.getenv("AZURE_EMBED_DEPLOYMENT", "text-embedding-3-small")
 
-# Semantic similarity threshold for retrieval.
-# Cosine distance ≤ 0.35 is treated as a high-confidence match.
-SIMILARITY_THRESHOLD: float = 0.35
-
-# Maximum results returned from a single query.
-QUERY_TOP_K: int = 5
-
-# ── Record Types ──────────────────────────────────────────────────────────────
+# Timeout for embedding HTTP calls (seconds) — prevents Kriya Loop stalls
+EMBED_TIMEOUT = 15.0
 
 
-@dataclass
-class ExecutionRecord:
+class OllamaEmbeddingFunction:
     """
-    A single action outcome stored after the ACT phase completes.
-    The `document` field is what gets embedded by ChromaDB's default
-    embedding function (sentence-transformers/all-MiniLM-L6-v2).
+    ChromaDB-compatible embedding function that routes to Ollama first,
+    then falls back to Azure OpenAI if the local inference server is offline.
+    All calls are synchronous httpx (ChromaDB's interface is sync).
+    Timeouts are strictly bounded to prevent event loop starvation.
     """
-    action_type: str                     # e.g., "cleanup", "package_install"
-    outcome: str                         # "success" | "failure" | "partial"
-    command_sequence: list[str]          # Ordered list of commands executed
-    iterations: int                      # Kriya Loop iteration number
-    timestamp: float = field(default_factory=time.time)
-    tags: list[str] = field(default_factory=list)
 
-    def to_document(self) -> str:
-        """Serialize to a natural-language string for embedding."""
-        cmds = " → ".join(self.command_sequence) if self.command_sequence else "none"
-        return (
-            f"Action: {self.action_type}. "
-            f"Outcome: {self.outcome}. "
-            f"Commands: {cmds}. "
-            f"Tags: {', '.join(self.tags)}."
-        )
+    def name(self) -> str:
+        """Required by ChromaDB >= 1.5 embedding function contract."""
+        return "ollama_azure_hybrid"
 
-    def to_metadata(self) -> dict[str, Any]:
-        return {
-            "action_type": self.action_type,
-            "outcome": self.outcome,
-            "iterations": self.iterations,
-            "timestamp": self.timestamp,
-            "tags": json.dumps(self.tags),
+    @staticmethod
+    def build_from_config(config: dict) -> "OllamaEmbeddingFunction":
+        """Required by ChromaDB >= 1.5 embedding function contract."""
+        return OllamaEmbeddingFunction()
+
+    def embed_documents(self, input: list[str], **kwargs) -> list[list[float]]:
+        """ChromaDB calls this for document ingestion."""
+        return self(input)
+
+    def embed_query(self, input: str, **kwargs) -> list[float]:
+        """ChromaDB calls this for query-time embedding."""
+        return self([input])[0]
+
+    def __call__(self, input: list[str]) -> list[list[float]]:
+        """Generate embeddings for a list of texts."""
+        # --- PRIMARY: Ollama local path ---
+        try:
+            embeddings = self._embed_via_ollama(input)
+            if embeddings:
+                return embeddings
+        except Exception as e:
+            log.warning(f"VECTOR: Ollama embedding failed ({e}), attempting Azure fallback")
+
+        # --- FALLBACK: Azure OpenAI cloud path ---
+        try:
+            embeddings = self._embed_via_azure(input)
+            if embeddings:
+                return embeddings
+        except Exception as e:
+            log.warning(f"VECTOR: Azure embedding fallback failed ({e}), using zero vectors")
+
+        # --- LAST RESORT: Return zero vectors so ChromaDB doesn't crash ---
+        log.error("VECTOR: All embedding backends offline. Returning zero vectors.")
+        return [[0.0] * 384 for _ in input]
+
+    def _embed_via_ollama(self, texts: list[str]) -> list[list[float]] | None:
+        """Call Ollama POST /api/embed for batch embedding."""
+        url = f"{OLLAMA_BASE}/api/embed"
+        payload = {
+            "model": OLLAMA_EMBED_MODEL,
+            "input": texts,
         }
+        with httpx.Client(timeout=EMBED_TIMEOUT) as client:
+            resp = client.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            embeddings = data.get("embeddings")
+            if embeddings and len(embeddings) == len(texts):
+                log.debug(f"VECTOR: Ollama returned {len(embeddings)} embeddings via {OLLAMA_EMBED_MODEL}")
+                return embeddings
+            return None
 
-    def record_id(self) -> str:
-        """Deterministic ID derived from content hash — deduplicates retries."""
-        content = f"{self.action_type}:{':'.join(self.command_sequence)}"
-        return hashlib.sha256(content.encode()).hexdigest()[:16]
+    def _embed_via_azure(self, texts: list[str]) -> list[list[float]] | None:
+        """Call Azure OpenAI embeddings API as cloud fallback."""
+        if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_API_KEY:
+            log.debug("VECTOR: Azure embedding credentials not configured, skipping fallback")
+            return None
 
-
-@dataclass
-class MemoryQueryResult:
-    """Result of a semantic similarity query."""
-    document: str
-    metadata: dict[str, Any]
-    distance: float
-    id: str
-
-    @property
-    def is_high_confidence(self) -> bool:
-        return self.distance <= SIMILARITY_THRESHOLD
-
-
-# ── VectorMemory ──────────────────────────────────────────────────────────────
+        url = (
+            f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/"
+            f"{AZURE_EMBED_DEPLOYMENT}/embeddings"
+            f"?api-version={AZURE_OPENAI_API_VERSION}"
+        )
+        headers = {
+            "api-key": AZURE_OPENAI_API_KEY,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "input": texts,
+        }
+        with httpx.Client(timeout=EMBED_TIMEOUT) as client:
+            resp = client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            embeddings = [item["embedding"] for item in data.get("data", [])]
+            if embeddings and len(embeddings) == len(texts):
+                log.debug(f"VECTOR: Azure returned {len(embeddings)} embeddings via {AZURE_EMBED_DEPLOYMENT}")
+                return embeddings
+            return None
 
 
 class VectorMemory:
-    """
-    Async-safe ChromaDB interface for the Kriya Loop.
+    def __init__(self):
+        # Initialize persistent client. If running inside the sandbox/daemon,
+        # /shared_data is mapped to the host's BTRFS subvolume.
+        os.makedirs(CHROMA_PATH, exist_ok=True)
+        self.client = chromadb.PersistentClient(path=CHROMA_PATH)
 
-    All blocking ChromaDB calls are offloaded to a dedicated single-thread
-    executor to ensure daemon latency stays within the 10 s iteration budget.
+        # Lightweight embedding function — no PyTorch, no transformers
+        self.embedding_fn = OllamaEmbeddingFunction()
 
-    Initialization is lazy — the ChromaDB client is not created until the
-    first call to `initialize()`. Import does not trigger disk I/O.
-    """
-
-    def __init__(self, path: str = CHROMA_PATH) -> None:
-        self._path = path
-        self._client: Any = None                  # chromadb.PersistentClient
-        self._exec_logs: Any = None               # ChromaDB Collection
-        self._skill_index: Any = None             # ChromaDB Collection
-        self._error_patterns: Any = None          # ChromaDB Collection
-        # Single-thread executor: ChromaDB SQLite backend is not thread-safe
-        # beyond sequential access. One thread serializes all I/O.
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="yantra-chroma"
+        # Get or create the collection
+        self.collection = self.client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            embedding_function=self.embedding_fn
         )
-        self._initialized: bool = False
-        self._init_failed: bool = False  # True if init was attempted and failed
+        log.info(f"VectorMemory initialized at {CHROMA_PATH} for collection '{COLLECTION_NAME}'")
 
-    async def initialize(self) -> None:
+    def upsert_skill(self, skill_data: dict) -> bool:
         """
-        Create the ChromaDB PersistentClient and ensure all collections exist.
-
-        Called once by the Kriya Loop engine after startup, before the first
-        REMEMBER phase. Idempotent — safe to call on restart.
+        Upsert a skill matching the yantraos/skill/v1 schema into ChromaDB.
+        Embedding generation is delegated to the OllamaEmbeddingFunction.
         """
-        if self._initialized:
-            return
-        if self._init_failed:
-            return  # Already tried and failed — don't retry every cycle
-
-        log.info(f"> MEMORY: Initializing ChromaDB at {self._path}")
-
         try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(self._executor, self._blocking_init)
-            self._initialized = True
-            log.info("> MEMORY: ChromaDB initialized. Collections ready.")
-        except Exception as exc:
-            self._init_failed = True
-            log.warning(
-                f"> MEMORY: ChromaDB initialization failed — memory subsystem DEGRADED. "
-                f"Reason: {exc}. Storage calls will be silently skipped."
-            )
+            skill_id = skill_data.get("id")
+            if not skill_id:
+                raise ValueError("Skill missing 'id' field")
 
-    def _blocking_init(self) -> None:
-        """Blocking ChromaDB initialization — runs in the dedicated executor."""
-        try:
-            import chromadb  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                "chromadb is not installed. Run: pip install chromadb"
-            ) from exc
+            # Create a rich semantic document string to embed
+            title = skill_data.get("title", "")
+            desc = skill_data.get("description", "")
+            tags = " ".join(skill_data.get("tags", []))
 
-        # PersistentClient writes to /var/lib/yantra/chromadb.
-        # Directory ownership (yantra_daemon:yantra) was set by systemd-tmpfiles.
-        # The +C (nodatacow) attribute was applied in Milestone 1 — no chattr here.
-        # On Live USB, overlayfs/tmpfs may refuse sqlite3 WAL-mode writes — fall back
-        # to an in-memory EphemeralClient rather than crashing the daemon.
-        try:
-            self._client = chromadb.PersistentClient(path=self._path)
-        except Exception as exc:
-            log.warning(
-                f"[#FFB000] VectorMemory operating in volatile Ephemeral mode "
-                f"(Live USB detected) — PersistentClient failed: {exc}"
-            )
-            self._client = chromadb.EphemeralClient()
+            document = f"Title: {title}\nDescription: {desc}\nTags: {tags}"
 
-        # get_or_create_collection is idempotent — safe on restart.
-        self._exec_logs = self._client.get_or_create_collection(
-            name=COLLECTION_EXECUTION_LOGS,
-            metadata={"hnsw:space": "cosine"},
-        )
-        self._skill_index = self._client.get_or_create_collection(
-            name=COLLECTION_SKILL_INDEX,
-            metadata={"hnsw:space": "cosine"},
-        )
-        self._error_patterns = self._client.get_or_create_collection(
-            name=COLLECTION_ERROR_PATTERNS,
-            metadata={"hnsw:space": "cosine"},
-        )
-
-        log.info(
-            f"> MEMORY: Collections — exec_logs: {self._exec_logs.count()}, "
-            f"skill_index: {self._skill_index.count()}, "
-            f"error_patterns: {self._error_patterns.count()} records"
-        )
-
-    async def _require_initialized(self) -> None:
-        """Ensure ChromaDB is ready. If init failed, raise to skip the operation."""
-        if self._initialized:
-            return
-        if self._init_failed:
-            raise RuntimeError("VectorMemory is DEGRADED — ChromaDB init failed on startup.")
-        await self.initialize()
-        if not self._initialized:
-            raise RuntimeError("VectorMemory is DEGRADED — ChromaDB init failed on startup.")
-
-    # ── Write Operations ──────────────────────────────────────────────────────
-
-    async def store_execution(self, record: ExecutionRecord) -> str:
-        """
-        Persist an action outcome to the execution_logs collection.
-
-        Non-blocking: the ChromaDB upsert runs in the dedicated executor.
-        Returns the record ID for confirmation.
-        """
-        await self._require_initialized()
-        loop = asyncio.get_event_loop()
-
-        record_id = record.record_id()
-        document = record.to_document()
-        metadata = record.to_metadata()
-
-        # Use upsert — retrying the same command sequence yields the same ID,
-        # which overwrites the previous record rather than duplicating it.
-        fn = partial(
-            self._exec_logs.upsert,
-            ids=[record_id],
-            documents=[document],
-            metadatas=[metadata],
-        )
-        await loop.run_in_executor(self._executor, fn)
-
-        log.debug(
-            f"> MEMORY: Stored execution record [{record_id}] — "
-            f"{record.action_type}/{record.outcome}"
-        )
-        return record_id
-
-    async def store_error_pattern(
-        self,
-        error_signature: str,
-        remediation: str,
-        *,
-        tags: list[str] | None = None,
-    ) -> str:
-        """
-        Store a known error pattern and its verified remediation sequence.
-        Used by the PATCH phase to persist cloud-sourced skill resolutions.
-        """
-        await self._require_initialized()
-        loop = asyncio.get_event_loop()
-
-        record_id = hashlib.sha256(error_signature.encode()).hexdigest()[:16]
-        document = f"Error: {error_signature}. Remediation: {remediation}."
-        metadata: dict[str, Any] = {
-            "error_signature": error_signature,
-            "remediation": remediation,
-            "tags": json.dumps(tags or []),
-            "timestamp": time.time(),
-        }
-
-        fn = partial(
-            self._error_patterns.upsert,
-            ids=[record_id],
-            documents=[document],
-            metadatas=[metadata],
-        )
-        await loop.run_in_executor(self._executor, fn)
-        log.debug(f"> MEMORY: Stored error pattern [{record_id}]")
-        return record_id
-
-    async def index_skill(self, skill_id: str, skill_data: dict[str, Any]) -> None:
-        """
-        Index a Skill package into the skill_index collection for semantic search.
-
-        skill_data should conform to the yantraos/skill/v1 schema (§3.1).
-        The document embedding is derived from title + description + tags.
-        """
-        await self._require_initialized()
-        loop = asyncio.get_event_loop()
-
-        title = skill_data.get("title", "")
-        description = skill_data.get("description", "")
-        tags = skill_data.get("tags", [])
-        document = f"{title}. {description}. Tags: {', '.join(tags)}."
-        metadata = {
-            "skill_id": skill_id,
-            "title": title,
-            "category": skill_data.get("category", ""),
-            "version": skill_data.get("version", "0.0.0"),
-            "tags": json.dumps(tags),
-        }
-
-        fn = partial(
-            self._skill_index.upsert,
-            ids=[skill_id],
-            documents=[document],
-            metadatas=[metadata],
-        )
-        await loop.run_in_executor(self._executor, fn)
-        log.info(f"> MEMORY: Indexed skill '{title}' [{skill_id}]")
-
-    # ── Read Operations ───────────────────────────────────────────────────────
-
-    async def query_executions(
-        self,
-        query_text: str,
-        *,
-        top_k: int = QUERY_TOP_K,
-        outcome_filter: str | None = None,
-    ) -> list[MemoryQueryResult]:
-        """
-        Semantic similarity search over past execution logs.
-
-        If outcome_filter is set (e.g., "success"), only records with that
-        outcome are returned — useful for retrieving only verified solutions.
-
-        Non-blocking: query runs in the dedicated executor.
-        """
-        await self._require_initialized()
-        loop = asyncio.get_event_loop()
-
-        where: dict[str, Any] | None = None
-        if outcome_filter:
-            where = {"outcome": {"$eq": outcome_filter}}
-
-        fn = partial(
-            self._exec_logs.query,
-            query_texts=[query_text],
-            n_results=min(top_k, max(self._exec_logs.count(), 1)),
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
-
-        try:
-            results = await loop.run_in_executor(self._executor, fn)
-        except Exception as exc:
-            log.warning(f"> MEMORY: Execution query failed: {exc}")
-            return []
-
-        return _parse_query_results(results)
-
-    async def query_error_patterns(
-        self,
-        error_description: str,
-        *,
-        top_k: int = 3,
-    ) -> list[MemoryQueryResult]:
-        """
-        Semantic search for a known remediation matching the described error.
-        The PATCH phase calls this before escalating to the cloud skill API.
-        """
-        await self._require_initialized()
-        loop = asyncio.get_event_loop()
-
-        fn = partial(
-            self._error_patterns.query,
-            query_texts=[error_description],
-            n_results=min(top_k, max(self._error_patterns.count(), 1)),
-            include=["documents", "metadatas", "distances"],
-        )
-
-        try:
-            results = await loop.run_in_executor(self._executor, fn)
-        except Exception as exc:
-            log.warning(f"> MEMORY: Error pattern query failed: {exc}")
-            return []
-
-        return _parse_query_results(results)
-
-    async def query_skills(
-        self,
-        query_text: str,
-        *,
-        top_k: int = QUERY_TOP_K,
-        category_filter: str | None = None,
-    ) -> list[MemoryQueryResult]:
-        """
-        Semantic search over the installed skill index.
-        Called by the Skill Acquisition pipeline before cloud lookup.
-        """
-        await self._require_initialized()
-        loop = asyncio.get_event_loop()
-
-        where: dict[str, Any] | None = None
-        if category_filter:
-            where = {"category": {"$eq": category_filter}}
-
-        fn = partial(
-            self._skill_index.query,
-            query_texts=[query_text],
-            n_results=min(top_k, max(self._skill_index.count(), 1)),
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
-
-        try:
-            results = await loop.run_in_executor(self._executor, fn)
-        except Exception as exc:
-            log.warning(f"> MEMORY: Skill query failed: {exc}")
-            return []
-
-        return _parse_query_results(results)
-
-    # ── Stats ─────────────────────────────────────────────────────────────────
-
-    async def stats(self) -> dict[str, int]:
-        """Return record counts for all collections."""
-        if not self._initialized:
-            return {}
-        loop = asyncio.get_event_loop()
-
-        def _counts() -> dict[str, int]:
-            return {
-                COLLECTION_EXECUTION_LOGS: self._exec_logs.count(),
-                COLLECTION_SKILL_INDEX: self._skill_index.count(),
-                COLLECTION_ERROR_PATTERNS: self._error_patterns.count(),
+            # Flatten metadata for ChromaDB (must be strings, ints, floats, bools)
+            metadata = {
+                "title": title,
+                "category": skill_data.get("category", "utility"),
+                "version": skill_data.get("version", "1.0.0"),
+                "author": skill_data.get("author", "unknown"),
+                "is_public": skill_data.get("is_public", False)
             }
 
-        return await loop.run_in_executor(self._executor, _counts)
+            # Add execution environment specifics to metadata
+            env = skill_data.get("execution_environment", {})
+            metadata["env_type"] = env.get("type", "hybrid")
 
-    # ── Shutdown ──────────────────────────────────────────────────────────────
+            # Perform upsert — embedding is generated via Ollama/Azure at call time
+            self.collection.upsert(
+                ids=[skill_id],
+                documents=[document],
+                metadatas=[metadata]
+            )
+            log.info(f"Successfully upserted skill '{title}' ({skill_id}) into VectorMemory")
+            return True
 
-    def shutdown(self) -> None:
-        """
-        Gracefully shut down the executor. Call this from the daemon's
-        shutdown handler to ensure in-flight writes are completed before exit.
-        """
-        log.info("> MEMORY: Shutting down vector memory executor...")
-        self._executor.shutdown(wait=True)
-        log.info("> MEMORY: Executor shut down. All writes flushed.")
+        except Exception as e:
+            log.error(f"Failed to upsert skill into VectorMemory: {e}")
+            return False
+
+    def query_skills(self, query: str, n_results: int = 3) -> list:
+        """Query for semantically related skills."""
+        try:
+            # Embed manually to bypass ChromaDB's internal dispatch issues
+            query_embedding = self.embedding_fn([query])  # Returns [[float, ...]]
+            results = self.collection.query(
+                query_embeddings=query_embedding,
+                n_results=n_results
+            )
+            return results
+        except Exception as e:
+            log.error(f"VectorMemory query failed: {e}")
+            return []
 
 
-# ── Module-level singleton ────────────────────────────────────────────────────
-
-# The Kriya Loop engine imports this singleton and calls await memory.initialize()
-# once during startup. Subsequent phases (REMEMBER, PATCH) use it directly.
-memory = VectorMemory(path=CHROMA_PATH)
-
-# ── Result Parser ─────────────────────────────────────────────────────────────
+# Singleton instance
+_instance = None
 
 
-def _parse_query_results(raw: dict[str, Any]) -> list[MemoryQueryResult]:
-    """Convert ChromaDB query response format into typed MemoryQueryResult objects."""
-    results: list[MemoryQueryResult] = []
+def get_memory() -> VectorMemory:
+    global _instance
+    if _instance is None:
+        _instance = VectorMemory()
+    return _instance
 
-    try:
-        ids_list = raw.get("ids", [[]])[0]
-        docs_list = raw.get("documents", [[]])[0]
-        meta_list = raw.get("metadatas", [[]])[0]
-        dist_list = raw.get("distances", [[]])[0]
-
-        for record_id, doc, meta, dist in zip(ids_list, docs_list, meta_list, dist_list):
-            results.append(MemoryQueryResult(
-                id=record_id,
-                document=doc,
-                metadata=meta or {},
-                distance=float(dist),
-            ))
-    except (IndexError, TypeError, KeyError) as exc:
-        log.warning(f"> MEMORY: Failed to parse query results: {exc}")
-
-    return results

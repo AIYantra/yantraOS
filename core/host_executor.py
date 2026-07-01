@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import grp
+import ipaddress
 import json
 import logging
 import os
@@ -58,9 +59,9 @@ SNAPSHOT_TIMEOUT_SECS: int = 60
 # from a malicious or buggy client flooding the socket.
 MAX_PAYLOAD_BYTES: int = 16384
 
-# Input sanitization regex — ONLY alphanumeric, underscore, hyphen, dot.
+# Input sanitization regex — ONLY alphanumeric, underscore, hyphen, dot, colon.
 # Prevents injection in command arguments.
-_SAFE_TARGET_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_.\-]+$")
+_SAFE_TARGET_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_.v:\-]+$")
 
 # ── Intent Schema ─────────────────────────────────────────────────────────────
 # Each valid intent type maps to a hardcoded command array factory.
@@ -76,6 +77,7 @@ _VALID_INTENTS: set[str] = {
     "PRUNE_SNAPSHOTS",
     "SYNC_CLOCK",
     "RELOAD_DAEMON_CONFIGS",
+    "BLOCK_IP",
 }
 
 
@@ -165,7 +167,18 @@ def _build_command(intent: str, target: str) -> tuple[list[str], str]:
             ["/usr/bin/systemctl", "daemon-reload"],
             "Reload all systemd unit files",
         ),
+        "BLOCK_IP": (
+            ["/usr/sbin/ufw", "deny", "from", target],
+            f"Block IP via UFW: {target}",
+        ),
     }
+
+    if intent == "BLOCK_IP":
+        try:
+            ipaddress.ip_address(target)
+        except ValueError:
+            log.critical(f"SECURITY MUTATION ALERT: Invalid IP address for BLOCK_IP: '{target}'")
+            raise ValueError(f"SECURITY: Invalid IP address for BLOCK_IP: '{target}'")
 
     if intent not in dispatch:
         raise ValueError(f"No command mapping for intent '{intent}'.")
@@ -186,13 +199,11 @@ def _execute_preflight_snapshot() -> tuple[bool, str]:
 
     Returns:
         Tuple of (success: bool, message: str).
-        On failure, the message contains the stderr output for FATAL logging.
     """
     if not Path(SNAPSHOT_BIN).exists():
-        return False, (
-            f"FATAL: Snapshot binary not found at {SNAPSHOT_BIN}. "
-            "Cannot gate intent execution without BTRFS pre-flight."
-        )
+        msg = f"FATAL: Snapshot binary not found at {SNAPSHOT_BIN}. Absolute strictness enforced. Mutation blocked."
+        log.critical(msg)
+        return False, msg
 
     try:
         result: subprocess.CompletedProcess[bytes] = subprocess.run(
@@ -567,13 +578,17 @@ async def _run_server() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
 
     # ── Serve until stop ──────────────────────────────────────────────
-    async with server:
-        await stop_event.wait()
-
-    # ── Cleanup ───────────────────────────────────────────────────────
-    log.info("> EXECUTOR: Server stopped. Cleaning up socket.")
-    if socket_path.exists():
-        socket_path.unlink()
+    try:
+        async with server:
+            await stop_event.wait()
+    except asyncio.CancelledError:
+        log.info("> EXECUTOR: CancelledError caught. Shutting down gracefully.")
+    finally:
+        log.info("> EXECUTOR: Server stopped. Cleaning up socket.")
+        server.close()
+        await server.wait_closed()
+        if os.path.exists('/run/yantra/executor.sock'):
+            os.unlink('/run/yantra/executor.sock')
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────

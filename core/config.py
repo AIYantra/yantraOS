@@ -16,8 +16,11 @@ import dotenv
 from pathlib import Path
 from typing import Any, Dict
 
-if not os.getenv("GEMINI_API_KEY"):
+if not os.getenv("DEEPSEEK_API_KEY") or not os.getenv("AZURE_OPENAI_API_KEY"):
     dotenv.load_dotenv("/etc/yantra/host_secrets.env")
+
+if not os.getenv("AZURE_OPENAI_API_VERSION"):
+    os.environ["AZURE_OPENAI_API_VERSION"] = "2026-03-17"
 
 logger = logging.getLogger(__name__)
 

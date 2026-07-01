@@ -13,6 +13,7 @@ Returns a strict capability state:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -294,3 +295,38 @@ def probe_all() -> HardwareSnapshot:
     gpu = probe_gpu()
     cpu_pct, disk_free_gb = probe_cpu_disk()
     return HardwareSnapshot(gpu=gpu, cpu_pct=cpu_pct, disk_free_gb=disk_free_gb)
+
+
+_auth_log_position: int = 0
+_auth_log_initialized: bool = False
+
+async def get_ssh_telemetry() -> str:
+    """Extract SSH auth logs for anomaly detection."""
+    global _auth_log_position
+    global _auth_log_initialized
+    log_path = "/host_log/auth.log"
+    try:
+        if not os.path.exists(log_path):
+            return ""
+            
+        file_size = os.path.getsize(log_path)
+        
+        if not _auth_log_initialized:
+            # First run: start from the end to avoid blowing up Azure TPM rate limits
+            _auth_log_position = max(0, file_size - 10000)
+            _auth_log_initialized = True
+
+        if file_size < _auth_log_position:
+            _auth_log_position = 0
+            
+        with open(log_path, "rb") as f:
+            f.seek(_auth_log_position)
+            data = f.read()
+            _auth_log_position = f.tell()
+            
+        raw = data.decode("utf-8", errors="replace").replace("\x00", "")
+        # Expand clamp to 500k chars (~125k tokens) to safely fit within the 272k limit
+        return raw[-500000:].strip()
+    except Exception as e:
+        log.warning(f"> HARDWARE: SSH telemetry probe failed: {e}")
+        return ""
