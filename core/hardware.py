@@ -263,19 +263,21 @@ def probe_gpu() -> GPUState:
     return _probe_lspci()
 
 
-def probe_cpu_disk() -> Tuple[float, float]:
+def probe_cpu_disk() -> Tuple[float, float, float]:
     """
-    Return (cpu_percent, disk_free_gb).
+    Return (cpu_percent, disk_free_gb, ram_percent).
     On Windows: uses C:\\ as the disk root.
     On Linux: uses /opt/yantra if it exists, otherwise /.
     """
     cpu_pct = 0.0
     disk_free_gb = 0.0
+    ram_pct = 0.0
 
     try:
         import psutil  # type: ignore[import-not-found]
 
         cpu_pct = psutil.cpu_percent(interval=0.5)
+        ram_pct = psutil.virtual_memory().percent
 
         if os.name == "nt":
             disk_path = "C:\\"
@@ -287,13 +289,13 @@ def probe_cpu_disk() -> Tuple[float, float]:
     except Exception as e:
         log.warning(f"> HARDWARE: CPU/Disk probe failed: {e}")
 
-    return cpu_pct, disk_free_gb
+    return cpu_pct, disk_free_gb, ram_pct
 
 
 def probe_all() -> HardwareSnapshot:
     """Collect a full hardware snapshot."""
     gpu = probe_gpu()
-    cpu_pct, disk_free_gb = probe_cpu_disk()
+    cpu_pct, disk_free_gb, _ = probe_cpu_disk()
     return HardwareSnapshot(gpu=gpu, cpu_pct=cpu_pct, disk_free_gb=disk_free_gb)
 
 
