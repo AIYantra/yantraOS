@@ -48,6 +48,14 @@ class OllamaEmbeddingFunction:
         """Required by ChromaDB >= 1.5 embedding function contract."""
         return OllamaEmbeddingFunction()
 
+    def embed_documents(self, documents: list[str]) -> list[list[float]]:
+        """ChromaDB calls this for document ingestion."""
+        return self(documents)
+
+    def embed_query(self, query: str) -> list[float]:
+        """ChromaDB calls this for query-time embedding."""
+        return self([query])[0]
+
     def __call__(self, input: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of texts."""
         # --- PRIMARY: Ollama local path ---
