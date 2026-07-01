@@ -61,7 +61,7 @@ def _build_router() -> Any:
         {
             "model_name": "azure/gpt-5.4-mini",
             "litellm_params": {
-                "model": "azure/gpt-5.4-mini",
+                "model": "openai/gpt-5.4-mini",
                 "api_key": os.environ.get("AZURE_OPENAI_API_KEY", ""),
                 "api_base": os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
                 "api_version": os.environ.get("AZURE_OPENAI_API_VERSION", "2026-03-17"),
