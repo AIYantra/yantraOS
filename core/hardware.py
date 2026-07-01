@@ -298,16 +298,24 @@ def probe_all() -> HardwareSnapshot:
 
 
 _auth_log_position: int = 0
+_auth_log_initialized: bool = False
 
 async def get_ssh_telemetry() -> str:
     """Extract SSH auth logs for anomaly detection."""
     global _auth_log_position
+    global _auth_log_initialized
     log_path = "/host_log/auth.log"
     try:
         if not os.path.exists(log_path):
             return ""
             
         file_size = os.path.getsize(log_path)
+        
+        if not _auth_log_initialized:
+            # First run: start from the end to avoid blowing up Azure TPM rate limits
+            _auth_log_position = max(0, file_size - 10000)
+            _auth_log_initialized = True
+
         if file_size < _auth_log_position:
             _auth_log_position = 0
             
