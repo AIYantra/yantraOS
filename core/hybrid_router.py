@@ -79,6 +79,24 @@ def _build_router() -> Any:
                 "stream": True,
             },
         },
+        {
+            "model_name": "gemini/gemini-2.0-flash",
+            "litellm_params": {
+                "model": "gemini/gemini-2.0-flash",
+                "api_key": os.environ.get("GEMINI_API_KEY", ""),
+                "timeout": 30,
+                "stream": True,
+            },
+        },
+        {
+            "model_name": "anthropic/claude-3-5-sonnet",
+            "litellm_params": {
+                "model": "anthropic/claude-3-5-sonnet",
+                "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
+                "timeout": 30,
+                "stream": True,
+            },
+        },
     ]
 
     fallbacks = [
