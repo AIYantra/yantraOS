@@ -187,8 +187,10 @@ class VectorMemory:
     def query_skills(self, query: str, n_results: int = 3) -> list:
         """Query for semantically related skills."""
         try:
+            # Embed manually to bypass ChromaDB's internal dispatch issues
+            query_embedding = self.embedding_fn([query])  # Returns [[float, ...]]
             results = self.collection.query(
-                query_texts=[query],
+                query_embeddings=query_embedding,
                 n_results=n_results
             )
             return results
