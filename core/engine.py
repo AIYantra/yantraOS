@@ -44,6 +44,7 @@ from .hybrid_router import (
 )
 from .sandbox import sandbox, SandboxStatus
 from .audit_log import log_execution
+from .cloud import stream_telemetry
 
 log = logging.getLogger("yantra.engine")
 
@@ -133,6 +134,7 @@ class KriyaState:
     inference_routing: str = "LOCAL"
 
     vram_allocation_mb: int = 0
+    ram_percent: float = 0.0
     inference_tps: float = 0.0
     context_window_tokens: int = 0
 
@@ -206,9 +208,10 @@ class KriyaLoopEngine:
         self._state.vram_total_gb = gpu.vram_total_gb
         self._state.gpu_util_pct = gpu.gpu_util_pct
 
-        cpu_pct, disk_free_gb = probe_cpu_disk()
+        cpu_pct, disk_free_gb, ram_pct = probe_cpu_disk()
         self._state.cpu_pct = cpu_pct
         self._state.disk_free_gb = disk_free_gb
+        self._state.ram_percent = ram_pct
 
         self._state.vram_allocation_mb = int(self._state.vram_used_gb * 1024)
         
@@ -606,6 +609,9 @@ class KriyaLoopEngine:
                 await self._phase_act()
                 self._sd_watchdog_ping()
                 self._sd_notify(f"STATUS=Iteration {self._state.iteration} complete")
+
+                # UPDATE_ARCHITECTURE Phase: Stream telemetry seamlessly in the background
+                asyncio.create_task(stream_telemetry(self._state))
 
             except Exception as e:
                 log.error(f"> ERROR: Iteration failed: {e}", exc_info=True)
