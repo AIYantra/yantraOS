@@ -463,7 +463,7 @@ set -euo pipefail
 # overlays during large VCS clones (pip git+ dependencies). Force HTTP/1.1
 # and expand the postBuffer to 500MB to prevent stream reset errors.
 export GIT_HTTP_VERSION=1.1
-git config --global http.postBuffer 524288000
+git config --system http.postBuffer 524288000
 
 VENV=/opt/yantra/venv
 PIP_LIST="$1"
