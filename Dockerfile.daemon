@@ -17,6 +17,7 @@ WORKDIR /opt/yantra
 
 # Copy core execution stack
 COPY core/ /opt/yantra/core/
+COPY scripts/ /opt/yantra/scripts/
 
 # Execute daemon entrypoint
 ENTRYPOINT ["python3", "-m", "core.daemon"]
