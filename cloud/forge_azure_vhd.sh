@@ -56,6 +56,7 @@ readonly -a PACSTRAP_PACKAGES=(
   base linux linux-firmware
   btrfs-progs dosfstools
   docker python python-pip python-virtualenv
+  git
   networkmanager
   sudo less vim
 )
