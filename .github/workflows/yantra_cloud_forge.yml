@@ -38,4 +38,4 @@ jobs:
         run: sudo bash cloud/forge_azure_vhd.sh
 
       - name: 4. Cascade Deployment (Azure CLI)
-        run: bash cloud/azure_vm_deploy.azcli --location eastus2 --vm-size Standard_B2s
+        run: bash cloud/azure_vm_deploy.azcli --location eastus2 --vm-size Standard_B2s --resource-group yantra-cloud-rg2 --storage-account yantravhdstg2
