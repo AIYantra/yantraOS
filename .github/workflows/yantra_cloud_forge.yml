@@ -20,7 +20,11 @@ jobs:
       - name: 1.1 Provision Matrix Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-utils arch-install-scripts btrfs-progs dosfstools parted rsync
+          sudo apt-get install -y qemu-utils arch-install-scripts btrfs-progs dosfstools parted rsync pacman-package-manager archlinux-keyring
+          sudo mkdir -p /etc/pacman.d
+          echo 'Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch' | sudo tee /etc/pacman.d/mirrorlist
+          sudo pacman-key --init
+          sudo pacman-key --populate archlinux
 
       - name: 2. Authenticate to Azure (OIDC)
         uses: azure/login@v2
