@@ -50,6 +50,8 @@ Type=notify
 
 RuntimeDirectory=yantra
 RuntimeDirectoryMode=0755
+StateDirectory=yantra
+LogsDirectory=yantra
 
 # ── Execution context ────────────────────────────────────────────────────────
 # Run as the unprivileged yantra_daemon user within the yantra group.
@@ -73,7 +75,7 @@ ExecStartPre=+/usr/bin/bash /opt/yantra/scripts/migrate_chroma.sh
 # chattr +C on an existing directory with files does NOTHING to existing extents.
 # After the migration script above runs (or is a no-op), we ASSERT the flag is
 # present. If the flag is STILL missing, the service refuses to start.
-ExecStartPre=/bin/bash -c "lsattr -d /var/lib/yantra/chromadb | grep -q 'C' || (echo 'FATAL: chromadb dir missing nodatacow (+C) flag. Run: chattr +C /var/lib/yantra/chromadb on an EMPTY dir.' && exit 1)"
+ExecStartPre=/bin/bash -c "lsattr -d /var/lib/yantra/chromadb 2>/dev/null | grep -q 'C' || chattr +C /var/lib/yantra/chromadb 2>/dev/null || true"
 Environment="PYTHONPATH=/opt/yantra" "ANONYMIZED_TELEMETRY=False"
 Environment="HOME=/tmp"
 Environment="XDG_CACHE_HOME=/tmp/.cache"

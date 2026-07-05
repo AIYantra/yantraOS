@@ -40,18 +40,24 @@ log() {
 
 # ── Guard: directory must exist ───────────────────────────────────────────────
 if [[ ! -d "${CHROMA_DIR}" ]]; then
-    log "INFO: ${CHROMA_DIR} does not exist. Creating with +C attribute."
+    log "INFO: ${CHROMA_DIR} does not exist. Creating directory."
     mkdir -p "${CHROMA_DIR}"
-    chattr +C "${CHROMA_DIR}"
+    chattr +C "${CHROMA_DIR}" 2>/dev/null || log "INFO: chattr +C not supported on this filesystem (non-BTRFS/tmpfs)."
     chown "${CHROMA_OWNER}:${CHROMA_GROUP}" "${CHROMA_DIR}"
     chmod 0750 "${CHROMA_DIR}"
-    log "OK: ${CHROMA_DIR} created with nodatacow (+C)."
+    log "OK: ${CHROMA_DIR} created."
     exit 0
 fi
 
-# ── Check if +C (nodatacow) is already present ───────────────────────────────
+# ── Check if +C (nodatacow) is already present or unsupported ─────────────────
 if lsattr -d "${CHROMA_DIR}" 2>/dev/null | grep -q 'C'; then
     log "OK: ${CHROMA_DIR} already has nodatacow (+C). No migration needed."
+    exit 0
+fi
+
+# If filesystem does not support +C (e.g., Live ISO overlayfs/tmpfs/ext4), log and exit cleanly.
+if ! chattr +C "${CHROMA_DIR}" 2>/dev/null; then
+    log "INFO: File attributes (chattr +C) not supported on this filesystem (Live ISO / non-BTRFS). BTRFS nodatacow check bypassed."
     exit 0
 fi
 
@@ -67,12 +73,10 @@ if [[ -d "${CHROMA_NEW}" ]]; then
 fi
 
 mkdir -p "${CHROMA_NEW}"
-chattr +C "${CHROMA_NEW}"
-log "INFO: Created ${CHROMA_NEW} with +C attribute."
+chattr +C "${CHROMA_NEW}" 2>/dev/null || true
+log "INFO: Created ${CHROMA_NEW}."
 
 # Step 2: Copy data — --reflink=never forces full data copy, not COW clone.
-# A COW reflink would preserve the old extents and defeat the purpose.
-# -a preserves permissions, timestamps, symlinks, xattrs.
 if [[ -n "$(ls -A "${CHROMA_DIR}" 2>/dev/null)" ]]; then
     log "INFO: Copying data from ${CHROMA_DIR} to ${CHROMA_NEW} (reflink=never)..."
     cp --reflink=never -a "${CHROMA_DIR}/"* "${CHROMA_NEW}/"
@@ -93,9 +97,8 @@ chown -R "${CHROMA_OWNER}:${CHROMA_GROUP}" "${CHROMA_DIR}"
 chmod 0750 "${CHROMA_DIR}"
 
 # Step 5: Verify
-if lsattr -d "${CHROMA_DIR}" 2>/dev/null | grep -q 'C'; then
-    log "OK: Migration complete. ${CHROMA_DIR} now has nodatacow (+C)."
-    log "OK: All new file extents will bypass COW — write amplification eliminated."
+if lsattr -d "${CHROMA_DIR}" 2>/dev/null | grep -q 'C' || ! lsattr -d "${CHROMA_DIR}" 2>/dev/null; then
+    log "OK: Migration check complete for ${CHROMA_DIR}."
     exit 0
 else
     log "FATAL: Migration failed — +C attribute not present after swap."

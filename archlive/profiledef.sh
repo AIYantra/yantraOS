@@ -34,6 +34,9 @@ file_permissions=(
   ["/opt/yantra/deploy"]="0:0:0755"
   ["/opt/yantra/scripts"]="0:0:0755"
 
+  # ── YantraOS global binary wrappers ─────────────────────────────────────────
+  ["/usr/bin/yantra-snapshot"]="0:0:0755"
+
   # ── YantraOS secrets directory ─────────────────────────────────────────────
   # Root-owned, yantra-group-readable. No world access.
   ["/etc/yantra"]="0:0:0750"

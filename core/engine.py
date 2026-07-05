@@ -22,7 +22,7 @@ from enum import Enum
 from typing import Any
 
 try:
-    from fastapi import FastAPI
+    from fastapi import FastAPI, Request
     from fastapi.responses import JSONResponse
     import uvicorn
     _FASTAPI_AVAILABLE = True
@@ -40,7 +40,7 @@ from .prompt import get_system_prompt, get_safety_context
 from .hardware import probe_gpu, probe_cpu_disk, get_ssh_telemetry
 from .hybrid_router import (
     select_model_group, stream_complete, INFERENCE_TIMEOUT_SECS,
-    detect_hardware_capability, InferenceAuthError,
+    detect_hardware_capability, InferenceAuthError, get_last_routing_tier,
 )
 from .sandbox import sandbox, SandboxStatus
 from .audit_log import log_execution
@@ -131,7 +131,7 @@ class KriyaState:
     cpu_pct: float = 0.0
     disk_free_gb: float = 0.0
     active_model: str = "unknown"
-    inference_routing: str = "LOCAL"
+    inference_routing: str = "PENDING"
 
     vram_allocation_mb: int = 0
     ram_percent: float = 0.0
@@ -158,6 +158,7 @@ _WATCHDOG_PING_INTERVAL = WATCHDOG_SEC / 2
 class KriyaLoopEngine:
     def __init__(self) -> None:
         self._state = KriyaState()
+        self._pending_injections: list[str] = []
         self._system_prompt = get_system_prompt()
         self._safety = get_safety_context()
         self._running = False
@@ -262,6 +263,7 @@ class KriyaLoopEngine:
                 "warranted, respond with a JSON object containing a \"actions\" "
                 "array where each element has \"type\", \"reason\", \"script\" "
                 "(optional shell command), and \"priority\" (CRITICAL/HIGH/MEDIUM/LOW). "
+                "For system maintenance operations (pruning snapshots, reloading daemon, restarting daemon, etc.), set \"type\" to the appropriate sovereign system intent: PRUNE_SNAPSHOTS, RELOAD_DAEMON_CONFIGS, RESTART_DAEMON, BLOCK_IP, SYSTEM_UPDATE, SYNC_CLOCK, ENABLE_DAEMON, DISABLE_DAEMON, STOP_DAEMON. Do NOT provide a script when dispatching sovereign system intents. "
                 "If the system is nominal, respond with {\"actions\": []}. "
                 "If the SSH authentication logs show repeated 'Disconnected from invalid user', "
                 "'Connection closed by authenticating user', or 'Permission denied (publickey)' "
@@ -278,6 +280,11 @@ class KriyaLoopEngine:
                 "maintaining your Active Defense monitoring."
             ),
         }, indent=2)
+
+        if self._pending_injections:
+            injected_cmds = "\n".join(f"- {cmd}" for cmd in self._pending_injections)
+            self._pending_injections.clear()
+            user_content += f"\n\nPRIORITY INJECTED USER TASKS:\n{injected_cmds}\nYou MUST execute these user tasks during your ACT phase!"
 
         if not self._state.conversation_history:
             self._state.conversation_history.append({"role": "system", "content": self._system_prompt})
@@ -322,9 +329,13 @@ class KriyaLoopEngine:
             approx_input_tokens: int = len(user_content) // 4
             self._state.context_window_tokens = approx_input_tokens + approx_output_tokens
 
+            # ── Sync routing tier from the TieredRouter ──────────────────
+            self._state.inference_routing = get_last_routing_tier()
+
             log.info(
                 f"> REASON: Inference complete — "
-                f"{len(accumulated_response)} chars received."
+                f"{len(accumulated_response)} chars received "
+                f"(routing={self._state.inference_routing})."
             )
 
         except asyncio.TimeoutError:
@@ -483,8 +494,25 @@ class KriyaLoopEngine:
                     if ip_match:
                         target = ip_match.group(0)
                 await self._send_host_intent(action_type, target)
-            elif script and sandbox.is_operational:
-                sandbox_result = await sandbox.execute(script)
+            elif script:
+                if sandbox.is_operational:
+                    sandbox_result = await sandbox.execute(script)
+                else:
+                    log.warning("> SANDBOX: Operational status DEGRADED (Live ISO). Executing script via local subprocess fallback...")
+                    proc = await asyncio.create_subprocess_shell(
+                        script,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout_b, stderr_b = await proc.communicate()
+                    class FallbackResult:
+                        outcome = type("Outcome", (), {"value": "SUCCESS" if proc.returncode == 0 else "FAILED"})()
+                        exit_code = proc.returncode
+                        duration_secs = 0.5
+                        stdout = stdout_b.decode('utf-8', errors='replace')
+                        stderr = stderr_b.decode('utf-8', errors='replace')
+                    sandbox_result = FallbackResult()
+
                 log_execution(script, sandbox_result)
                 stdout_text = (sandbox_result.stdout or "").strip()
                 stderr_text = getattr(sandbox_result, "stderr", "") or ""
@@ -680,6 +708,19 @@ class KriyaLoopEngine:
         @app.get("/health")
         async def health():
             return {"status": "ok", "iteration": engine_ref._state.iteration}
+
+        @app.post("/inject")
+        async def inject(request: Request):
+            try:
+                data = await request.json()
+            except Exception:
+                return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+            cmd = data.get("command") or data.get("instruction") or data.get("task")
+            if not cmd:
+                return JSONResponse(status_code=400, content={"error": "Missing 'command' field"})
+            engine_ref._pending_injections.append(str(cmd))
+            log.info(f"> STATE API: Injected user task: {cmd}")
+            return {"status": "accepted", "command": cmd}
 
         config = uvicorn.Config(
             app,

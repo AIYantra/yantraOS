@@ -30,6 +30,13 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# ── PRE-FLIGHT CHECK ──────────────────────────────────────────────────────────
+if [[ -z "${YANTRA_AZURE_KEY:-}" ]]; then
+    echo "FATAL: YANTRA_AZURE_KEY is not present in the environment." >&2
+    echo "Aborting mkarchiso build to prevent compiling a dead OS image." >&2
+    exit 1
+fi
+
 # ── Static geometry ───────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 readonly SCRIPT_DIR
@@ -192,6 +199,27 @@ scaffold_airootfs() {
   wire_systemd
   stage_secrets
   scaffold_identity_and_fs
+  provision_global_binaries
+}
+
+# ── 2.x — Global binary wrappers ──────────────────────────────────────────────
+# Provision system-wide executable wrappers in /usr/bin/ so the Host Executor
+# and pacman hooks can locate YantraOS tools without knowing the venv path.
+provision_global_binaries() {
+  log_info "── provision_global_binaries ──"
+
+  # /usr/bin/yantra-snapshot → venv python3 cli_snapshot.py
+  local snap_bin="${AIROOTFS}/usr/bin/yantra-snapshot"
+  install -dm755 "$(dirname -- "${snap_bin}")"
+  cat > "${snap_bin}" <<'SNAPEOF'
+#!/bin/bash
+# YantraOS — Global BTRFS Snapshot Wrapper
+# Delegates to the venv-isolated CLI so the Host Executor and pacman hooks
+# can call a single, PATH-resolvable binary without venv activation.
+exec /opt/yantra/venv/bin/python3 /opt/yantra/core/cli_snapshot.py "$@"
+SNAPEOF
+  chmod 0755 "${snap_bin}"
+  log_ok "/usr/bin/yantra-snapshot wrapper provisioned."
 }
 
 # ── 2.x — Systemd symlink matrix ──────────────────────────────────────────────
@@ -471,9 +499,12 @@ install -dm755 /opt/yantra
 python -m venv "${VENV}"
 "${VENV}/bin/pip" install --upgrade pip setuptools wheel --quiet --retries 10 --timeout 120
 # shellcheck disable=SC2086  # intentional word-split of the package list
-"${VENV}/bin/pip" install ${PIP_LIST} --quiet --retries 10 --timeout 120
+"${VENV}/bin/pip" install ${PIP_LIST} --prefer-binary --quiet --retries 10 --timeout 120
 if [[ -f /opt/yantra/requirements.txt ]]; then
-  "${VENV}/bin/pip" install -r /opt/yantra/requirements.txt --quiet --retries 10 --timeout 120
+  # Pre-install litellm from PyPI wheel to bypass git promisor deadlock
+  # (blob-less clone index-pack IPC fails inside arch-chroot).
+  "${VENV}/bin/pip" install litellm --no-cache-dir --prefer-binary --quiet --retries 10 --timeout 120
+  "${VENV}/bin/pip" install -r /opt/yantra/requirements.txt --prefer-binary --quiet --retries 10 --timeout 120
 fi
 # Offline LiteLLM cost map so routing works air-gapped (best-effort).
 LITELLM_DIR="$(find "${VENV}/lib" -type d -path '*/site-packages/litellm' -print -quit || true)"
@@ -651,7 +682,7 @@ sign_artifact() {
   GNUPGHOME="${gnupg_tmp}" gpg --batch --quiet --import -- "${SIGNING_KEY}" \
     || { wipe_gnupghome "${gnupg_tmp}"; die "Failed to import signing key."; }
 
-  local -a sign_cmd=(gpg --batch --yes --armor --detach-sign)
+  local -a sign_cmd=(gpg --batch --yes --armor --trust-model always --detach-sign)
   [[ -n "${SIGNING_KEY_PASSPHRASE}" ]] && sign_cmd+=(--pinentry-mode loopback --passphrase "${SIGNING_KEY_PASSPHRASE}")
   sign_cmd+=(--output "${sum_file}.sig" -- "${sum_file}")
 

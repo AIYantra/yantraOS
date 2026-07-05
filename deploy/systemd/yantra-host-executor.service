@@ -40,6 +40,9 @@ RequiresMountsFor=/run/yantra
 # the socket bind is near-instant.
 Type=simple
 
+RuntimeDirectory=yantra
+RuntimeDirectoryMode=0755
+
 # ── Execution context ────────────────────────────────────────────────────────
 # Runs as root — this daemon IS the privilege boundary. The Kriya Loop
 # (yantra_daemon) connects as an unprivileged client over the UDS.
@@ -69,7 +72,7 @@ SyslogIdentifier=yantra-host-executor
 ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/run/yantra /@snapshots
+ReadWritePaths=/run/yantra -/@snapshots
 
 # ── Resource limits ──────────────────────────────────────────────────────────
 # The executor is lightweight — snapshot + pacman. Cap it conservatively.

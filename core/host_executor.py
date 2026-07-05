@@ -63,6 +63,39 @@ MAX_PAYLOAD_BYTES: int = 16384
 # Prevents injection in command arguments.
 _SAFE_TARGET_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_.v:\-]+$")
 
+# ── Live ISO Detection ───────────────────────────────────────────────────────
+# On an archiso Live USB (overlayfs over squashfs), there is no BTRFS
+# filesystem to snapshot. Instead of throwing CRITICAL, the executor
+# gracefully degrades: safe (non-destructive) intents proceed without
+# the pre-flight gate; destructive (persistent disk mutation) intents
+# are blocked with a clear WARNING.
+
+_SAFE_INTENTS: frozenset[str] = frozenset({
+    "RELOAD_DAEMON_CONFIGS",
+    "SYNC_CLOCK",
+    "SYSTEM_UPDATE",
+    "RESTART_DAEMON",
+    "ENABLE_DAEMON",
+    "DISABLE_DAEMON",
+    "STOP_DAEMON",
+})
+
+_DESTRUCTIVE_INTENTS: frozenset[str] = frozenset({
+    "PRUNE_SNAPSHOTS",
+    "BLOCK_IP",
+})
+
+
+def _is_live_iso() -> bool:
+    """Detect if the Host Executor is running on an archiso Live environment.
+
+    Checks for the existence of /run/archiso/cowspace, which is the
+    overlayfs copy-on-write tmpfs mount that archiso creates at boot.
+    This path is exclusive to archiso live sessions and does not exist
+    on installed BTRFS systems.
+    """
+    return Path("/run/archiso/cowspace").exists()
+
 # ── Intent Schema ─────────────────────────────────────────────────────────────
 # Each valid intent type maps to a hardcoded command array factory.
 # NO raw shell strings are ever accepted. The mapping is exhaustive —
@@ -316,23 +349,46 @@ def _process_intent(payload: dict[str, Any]) -> dict[str, Any]:
 
     # ── Step 4: BTRFS pre-flight snapshot gate ────────────────────────
     log.info(f"> EXECUTOR: Processing intent={intent} target={target}")
-    log.info("> EXECUTOR: Triggering BTRFS pre-flight snapshot...")
 
-    snap_ok, snap_msg = _execute_preflight_snapshot()
-    if not snap_ok:
-        log.critical(
-            f"> EXECUTOR: Intent BLOCKED — snapshot pre-flight failed. "
-            f"intent={intent} target={target}"
+    if _is_live_iso():
+        # ── Live ISO graceful degradation ─────────────────────────────
+        if intent in _DESTRUCTIVE_INTENTS:
+            msg = (
+                f"Live ISO overlayfs detected. Destructive intent '{intent}' "
+                f"BLOCKED — persistent disk mutations are prohibited on ephemeral sessions."
+            )
+            log.warning(f"> EXECUTOR: {msg}")
+            return {
+                "status": "BLOCKED",
+                "error": msg,
+                "intent": intent,
+                "target": target,
+                "ts": time.time(),
+            }
+        # Safe intent on Live ISO — bypass the pre-flight gate.
+        log.info(
+            "> EXECUTOR: Live ISO overlayfs detected. "
+            "BTRFS pre-flight snapshot bypassed for ephemeral session."
         )
-        return {
-            "status": "FATAL",
-            "error": snap_msg,
-            "intent": intent,
-            "target": target,
-            "ts": time.time(),
-        }
+    else:
+        # ── Installed system: mandatory BTRFS pre-flight ──────────────
+        log.info("> EXECUTOR: Triggering BTRFS pre-flight snapshot...")
 
-    log.info("> EXECUTOR: Pre-flight snapshot gate PASSED.")
+        snap_ok, snap_msg = _execute_preflight_snapshot()
+        if not snap_ok:
+            log.critical(
+                f"> EXECUTOR: Intent BLOCKED — snapshot pre-flight failed. "
+                f"intent={intent} target={target}"
+            )
+            return {
+                "status": "FATAL",
+                "error": snap_msg,
+                "intent": intent,
+                "target": target,
+                "ts": time.time(),
+            }
+
+        log.info("> EXECUTOR: Pre-flight snapshot gate PASSED.")
 
     # ── Step 5: Command dispatch ──────────────────────────────────────
     try:
