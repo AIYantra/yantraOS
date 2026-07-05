@@ -1,0 +1,36 @@
+name: YantraOS Cloud Forge
+
+on:
+  push:
+    branches:
+      - main
+
+# Required for Azure OIDC authentication
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  forge-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 1.1 Provision Matrix Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils arch-install-scripts btrfs-progs dosfstools parted rsync
+
+      - name: 2. Authenticate to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 3. Forge Azure VHD
+        run: sudo bash cloud/forge_azure_vhd.sh
+
+      - name: 4. Cascade Deployment (Azure CLI)
+        run: bash cloud/azure_vm_deploy.azcli
