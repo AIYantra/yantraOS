@@ -701,111 +701,28 @@ class KriyaLoopEngine:
         if not _FASTAPI_AVAILABLE:
             return
 
-        app = FastAPI(title="YantraOS State API", version="1.0")
-        engine_ref = self
-
-        @app.get("/state")
-        async def get_state():
-            s = engine_ref._state
-            uptime = round(time.time() - s.start_time)
-            
-            btrfs_snapshot_id = "N/A"
-            btrfs_timestamp = "N/A"
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "snapper", "list",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout_b, _ = await proc.communicate()
-                if proc.returncode == 0:
-                    lines = stdout_b.decode().strip().split('\n')
-                    if len(lines) > 2:
-                        last_line = lines[-1].split('|')
-                        if len(last_line) >= 3:
-                            btrfs_snapshot_id = last_line[0].strip()
-                            btrfs_timestamp = last_line[2].strip()
-            except Exception:
-                pass
-            
-            payload = {
-                "daemon_status": "ACTIVE" if engine_ref._running else "IDLE",
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "iteration": s.iteration,
-                "phase": s.phase.value,
-                "uptime_seconds": uptime,
-                "active_model": s.active_model,
-                "inference_routing": s.inference_routing,
-                "cpu_pct": s.cpu_pct,
-                "disk_free_gb": s.disk_free_gb,
-                "vram_used_gb": s.vram_used_gb,
-                "vram_total_gb": s.vram_total_gb,
-                "gpu_util_pct": s.gpu_util_pct,
-                "consecutive_failures": s.consecutive_failures,
-                "blocked_ips": s.blocked_ips[-50:],  # last 50
-                "thought_stream": s.thought_stream[-30:],  # last 30 entries
-                "btrfs_snapshot_id": btrfs_snapshot_id,
-                "btrfs_timestamp": btrfs_timestamp,
-            }
-            return JSONResponse(content=payload)
-
-        @app.get("/health")
-        async def health():
-            return {"status": "ok", "iteration": engine_ref._state.iteration}
-
-        from .ipc_server import attach_ipc_routes
-        attach_ipc_routes(app, engine_ref)
-
-        @app.post("/api/v1/config/route")
-        async def route_config(request: Request):
-            try:
-                data = await request.json()
-            except Exception:
-                return JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
-            
-            tier = data.get("tier")
-            model = data.get("model")
-            if tier not in ["traffic_cop", "heavy_lifter"] or not model:
-                return JSONResponse(status_code=400, content={"error": "Invalid tier or missing model"})
-            
-            if hasattr(engine_ref, "_config") and hasattr(engine_ref._config, "models"):
-                engine_ref._config.models[tier] = str(model)
-                return {"status": "success", "tier": tier, "model": model}
-            
-            return JSONResponse(status_code=500, content={"error": "Engine config not available"})
-
-        @app.post("/api/v1/secrets/update")
-        async def update_secrets(request: Request):
-            try:
-                data = await request.json()
-            except Exception:
-                return JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
-            
-            provider = data.get("provider")
-            key = data.get("key")
-            if not provider or not key:
-                return JSONResponse(status_code=400, content={"error": "Missing provider or key"})
-            
-            action = {
-                "type": "UPDATE_SECRETS",
-                "reason": f"API Key injection for {provider} via out-of-band C2",
-                "target": f"{provider}={key}"
-            }
-            engine_ref._state.pending_actions.append(action)
-            return {"status": "success", "message": f"Queued privileged UPDATE_SECRETS for {provider}"}
-
-        config = uvicorn.Config(
-            app,
-            host="0.0.0.0",
-            port=50000,
-            log_level="warning",
-            loop="asyncio",
-        )
-        server = uvicorn.Server(config)
         try:
+            app = FastAPI(title="YantraOS State API", version="1.0")
+            engine_ref = self
+
+            @app.get("/health")
+            async def health():
+                return {"status": "ok", "iteration": engine_ref._state.iteration}
+
+            from .ipc_server import attach_ipc_routes
+            attach_ipc_routes(app, engine_ref)
+
+            config = uvicorn.Config(
+                app,
+                host="0.0.0.0",
+                port=50000,
+                log_level="warning",
+                loop="asyncio",
+            )
+            server = uvicorn.Server(config)
             await server.serve()
         except Exception as e:
-            log.warning(f"> STATE API: Server error: {e}")
+            log.warning(f"> STATE API: Server initialization error: {e}")
 
 
 # ── Entrypoint ────────────────────────────────────────────────────

@@ -228,7 +228,14 @@ async def cmd_api(message: Message):
 @dp.message()
 async def default_handler(message: Message):
     """Catch-all for unknown commands."""
-    await message.answer("Unknown command. Available commands: /report, /task <instruction>")
+    await message.answer(
+        "Unknown command. Available commands:\n"
+        "- /report\n"
+        "- /task <instruction>\n"
+        "- /route <tier> <model>\n"
+        "- /system <action>\n"
+        "- /api <provider> <key>"
+    )
 
 
 async def main():
