@@ -38,6 +38,7 @@ except ImportError:
 
 from .prompt import get_system_prompt, get_safety_context
 from .hardware import probe_gpu, probe_cpu_disk, get_ssh_telemetry
+from .compliance_executor import ComplianceExecutor
 from .hybrid_router import (
     select_model_group, stream_complete, INFERENCE_TIMEOUT_SECS,
     detect_hardware_capability, InferenceAuthError, get_last_routing_tier,
@@ -163,6 +164,7 @@ class KriyaLoopEngine:
         self._safety = get_safety_context()
         self._running = False
         self._last_watchdog_ping: float = 0.0
+        self.compliance_executor = ComplianceExecutor()
 
         if sdnotify is not None:
             self._sd = sdnotify.SystemdNotifier()
@@ -671,6 +673,8 @@ class KriyaLoopEngine:
 
                 # UPDATE_ARCHITECTURE Phase: Stream telemetry seamlessly in the background
                 asyncio.create_task(stream_telemetry(self._state))
+                # Sweep expired telemetry to enforce DPDPA data mortality
+                self.compliance_executor.sweep_expired_telemetry(24.0)
 
             except Exception as e:
                 log.error(f"> ERROR: Iteration failed: {e}", exc_info=True)
