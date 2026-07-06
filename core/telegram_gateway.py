@@ -103,13 +103,18 @@ async def cmd_report(message: Message):
     failures = state.get('consecutive_failures', 0)
     ts = state.get('thought_stream', [])
     last_thought = ts[-1] if ts else "No thoughts yet"
+    
+    # BTRFS Telemetry added here
+    btrfs_id = state.get('btrfs_snapshot_id', 'N/A')
+    btrfs_ts = state.get('btrfs_timestamp', 'N/A')
 
     report = (
         f"*YantraOS Node Report*\n\n"
         f"• *Phase*: {escape_md(str(phase))}\n"
         f"• *CPU Load*: {escape_md(str(cpu_load))}%\n"
         f"• *VRAM Usage*: {escape_md(f'{vram_used} / {vram_total} GB')}\n"
-        f"• *Consecutive Failures*: {escape_md(str(failures))}\n\n"
+        f"• *Consecutive Failures*: {escape_md(str(failures))}\n"
+        f"• *BTRFS Checkpoint*: {escape_md(str(btrfs_id))} ({escape_md(str(btrfs_ts))})\n\n"
         f"*Last Thought*:\n`{escape_md(str(last_thought))}`"
     )
 
@@ -147,6 +152,74 @@ async def cmd_task(message: Message):
         except Exception as exc:
             log.error(f"> TELEGRAM: Error posting task: {exc}")
             await message.answer(f"❌ *Error posting task*:\n`{escape_md(str(exc))}`", parse_mode="MarkdownV2")
+
+
+@dp.message(Command("route"))
+async def cmd_route(message: Message):
+    """Cognitive Routing Mutation"""
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("Usage: /route <tier> <model>\nTiers: traffic_cop, heavy_lifter")
+        return
+    tier, model = parts[1], parts[2]
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post("http://127.0.0.1:50000/api/v1/config/route", json={"tier": tier, "model": model}, timeout=10) as resp:
+                if resp.status == 200:
+                    await message.answer(f"✅ Route mutation successful: {tier} -> {model}")
+                else:
+                    err = await resp.text()
+                    await message.answer(f"❌ Route mutation failed (HTTP {resp.status}):\n`{escape_md(err)}`", parse_mode="MarkdownV2")
+        except Exception as exc:
+            await message.answer(f"❌ Error mutating route:\n`{escape_md(str(exc))}`", parse_mode="MarkdownV2")
+
+
+@dp.message(Command("system"))
+async def cmd_system(message: Message):
+    """System Directives mapping to Host Executor intents"""
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Usage: /system <action>")
+        return
+    action = parts[1].upper()
+    
+    payload = {
+        "action": "inject_thought", 
+        "payload": f"EXECUTE INTENT: {action}",
+        "command": f"EXECUTE INTENT: {action}"
+    }
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(INJECT_URL, json=payload, timeout=10) as resp:
+                if resp.status == 200:
+                    await message.answer(f"✅ System directive injected: {action}")
+                else:
+                    err = await resp.text()
+                    await message.answer(f"❌ Directive injection failed (HTTP {resp.status}):\n`{escape_md(err)}`", parse_mode="MarkdownV2")
+        except Exception as exc:
+            await message.answer(f"❌ Error injecting directive:\n`{escape_md(str(exc))}`", parse_mode="MarkdownV2")
+
+
+@dp.message(Command("api"))
+async def cmd_api(message: Message):
+    """API Key Injection via unprivileged C2 gateway to root Host Executor"""
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("Usage: /api <provider> <key>")
+        return
+    provider, key = parts[1], parts[2]
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post("http://127.0.0.1:50000/api/v1/secrets/update", json={"provider": provider, "key": key}, timeout=10) as resp:
+                if resp.status == 200:
+                    await message.answer(f"✅ API Key proxy queued for {provider}")
+                else:
+                    err = await resp.text()
+                    await message.answer(f"❌ Failed to proxy API key (HTTP {resp.status}):\n`{escape_md(err)}`", parse_mode="MarkdownV2")
+        except Exception as exc:
+            await message.answer(f"❌ Error proxying API key:\n`{escape_md(str(exc))}`", parse_mode="MarkdownV2")
 
 
 @dp.message()
