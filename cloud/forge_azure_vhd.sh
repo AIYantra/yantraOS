@@ -384,8 +384,7 @@ stage_secrets() {
   log_info "── stage_secrets (cloud) ──"
   local host_secrets="${SCRIPT_DIR}/host_secrets.env"
   local etc_yantra="${MNT_ROOT}/etc/yantra"
-  local staged_ro="${etc_yantra}/host_secrets.env"
-  local staged_rw="${etc_yantra}/writable/host_secrets.env"
+  local staged="${etc_yantra}/host_secrets.env"
 
   if [[ ! -f "${host_secrets}" ]]; then
     log_warn "host_secrets.env absent — VHD will ship WITHOUT inference credentials."
@@ -393,23 +392,19 @@ stage_secrets() {
     return 0
   fi
 
-  # Read-only reference copy (root:root 0600).
-  install -dm700 "${etc_yantra}"
-  install -Dm600 "${host_secrets}" "${staged_ro}"
-  sed -i "s/['\"]//g; s/[[:space:]]*$//" "${staged_ro}"
+  # Reference copy (root:yantra 0640).
+  install -dm750 "${etc_yantra}"
+  install -Dm640 "${host_secrets}" "${staged}"
+  sed -i "s/['\"]//g; s/[[:space:]]*$//" "${staged}"
+  arch-chroot "${MNT_ROOT}" bash -c "chown root:yantra /etc/yantra/host_secrets.env" || true
+  log_ok "Secrets staged: 0640 root:yantra"
 
-  # Writable live copy (root:yantra 0660).
-  install -dm770 "${etc_yantra}/writable"
-  install -Dm660 "${host_secrets}" "${staged_rw}"
-  sed -i "s/['\"]//g; s/[[:space:]]*$//" "${staged_rw}"
-  log_ok "Secrets staged: 0600 root:root (reference) + 0660 (writable)."
-
-  # EnvironmentFile drop-in → writable path.
+  # EnvironmentFile drop-in
   local dropin="${MNT_ROOT}/etc/systemd/system/yantra.service.d"
   install -dm755 "${dropin}"
-  printf '[Service]\nEnvironmentFile=/etc/yantra/writable/host_secrets.env\n' > "${dropin}/env.conf"
+  printf '[Service]\nEnvironmentFile=/etc/yantra/host_secrets.env\n' > "${dropin}/env.conf"
   chmod 640 "${dropin}/env.conf"
-  log_ok "EnvironmentFile drop-in → /etc/yantra/writable/host_secrets.env"
+  log_ok "EnvironmentFile drop-in → /etc/yantra/host_secrets.env"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
