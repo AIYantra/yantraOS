@@ -117,7 +117,7 @@ async def cmd_report(message: Message):
         f"• *CPU Load*: {escape_md(str(cpu_load))}%\n"
         f"• *VRAM Usage*: {escape_md(f'{vram_used} / {vram_total} GB')}\n"
         f"• *Consecutive Failures*: {escape_md(str(failures))}\n"
-        f"• *BTRFS Checkpoint*: {escape_md(str(btrfs_id))} ({escape_md(str(btrfs_ts))})\n\n"
+        f"• *BTRFS Checkpoint*: {escape_md(str(btrfs_id))} \\({escape_md(str(btrfs_ts))}\\)\n\n"
         f"*Last Thought*:\n`{escape_code(str(last_thought))}`"
     )
 
@@ -151,7 +151,7 @@ async def cmd_task(message: Message):
                     await message.answer(f"✅ *Task Accepted*\n\n`{escape_code(str(data))}`", parse_mode="MarkdownV2")
                 else:
                     err = await resp.text()
-                    await message.answer(f"❌ *Failed to inject task* (HTTP {resp.status}):\n`{escape_code(err)}`", parse_mode="MarkdownV2")
+                    await message.answer(f"❌ *Failed to inject task* \\(HTTP {resp.status}\\):\n`{escape_code(err)}`", parse_mode="MarkdownV2")
         except Exception as exc:
             log.error(f"> TELEGRAM: Error posting task: {exc}")
             await message.answer(f"❌ *Error posting task*:\n`{escape_code(str(exc))}`", parse_mode="MarkdownV2")
@@ -173,7 +173,7 @@ async def cmd_route(message: Message):
                     await message.answer(f"✅ Route mutation successful: {tier} -> {model}")
                 else:
                     err = await resp.text()
-                    await message.answer(f"❌ Route mutation failed (HTTP {resp.status}):\n`{escape_code(err)}`", parse_mode="MarkdownV2")
+                    await message.answer(f"❌ Route mutation failed \\(HTTP {resp.status}\\):\n`{escape_code(err)}`", parse_mode="MarkdownV2")
         except Exception as exc:
             await message.answer(f"❌ Error mutating route:\n`{escape_code(str(exc))}`", parse_mode="MarkdownV2")
 
@@ -199,7 +199,7 @@ async def cmd_system(message: Message):
                     await message.answer(f"✅ System directive injected: {action}")
                 else:
                     err = await resp.text()
-                    await message.answer(f"❌ Directive injection failed (HTTP {resp.status}):\n`{escape_code(err)}`", parse_mode="MarkdownV2")
+                    await message.answer(f"❌ Directive injection failed \\(HTTP {resp.status}\\):\n`{escape_code(err)}`", parse_mode="MarkdownV2")
         except Exception as exc:
             await message.answer(f"❌ Error injecting directive:\n`{escape_code(str(exc))}`", parse_mode="MarkdownV2")
 
@@ -220,7 +220,7 @@ async def cmd_api(message: Message):
                     await message.answer(f"✅ API Key proxy queued for {provider}")
                 else:
                     err = await resp.text()
-                    await message.answer(f"❌ Failed to proxy API key (HTTP {resp.status}):\n`{escape_code(err)}`", parse_mode="MarkdownV2")
+                    await message.answer(f"❌ Failed to proxy API key \\(HTTP {resp.status}\\):\n`{escape_code(err)}`", parse_mode="MarkdownV2")
         except Exception as exc:
             await message.answer(f"❌ Error proxying API key:\n`{escape_code(str(exc))}`", parse_mode="MarkdownV2")
 
