@@ -15,8 +15,9 @@ class ComplianceExecutor:
     Implements a simulated TPM 2.0 PCR register for cryptographic consent tracking
     and enforces data mortality (automated telemetry TTL) in compliance with DPDPA.
     """
-    def __init__(self, db_path="/home/admin/yantra_workspace/consent_ledger.db"):
+    def __init__(self, db_path="/home/admin/yantra_workspace/consent_ledger.db", chroma_client=None):
         self.db_path = db_path
+        self.chroma_client = chroma_client
         self._init_keys()
         self._init_db()
 
@@ -97,6 +98,9 @@ class ComplianceExecutor:
             conn.commit()
         
         logger.info(f"Recorded consent state: {intent} (PCR updated)")
+        
+        if intent == "CONSENT_REVOKED":
+            self.immediate_data_purge()
 
     def store_telemetry(self, data: str):
         """Stores a piece of telemetry data."""
@@ -109,6 +113,32 @@ class ComplianceExecutor:
                 (telemetry_id, timestamp, data)
             )
             conn.commit()
+
+    def immediate_data_purge(self):
+        """
+        Right to Erasure (DPDPA Section 12).
+        Instantly truncates the SQLite telemetry cache and drops non-essential vector embeddings.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM telemetry_store")
+            deleted = cursor.rowcount
+            conn.commit()
+            
+        if self.chroma_client:
+            try:
+                for collection_name in ["skill_index", "execution_logs"]:
+                    try:
+                        col = self.chroma_client.get_collection(collection_name)
+                        # Drop embeddings across vector space
+                        col.delete(where={"timestamp": {"$gte": 0}})
+                        logger.info(f"Purged vector collection {collection_name}")
+                    except ValueError:
+                        pass
+            except Exception as e:
+                logger.error(f"Failed to purge ChromaDB collections: {e}")
+                
+        logger.info(f"Immediate data purge executed. Dropped {deleted} SQLite records and cleared vectors.")
 
     def sweep_expired_telemetry(self, ttl_hours: float):
         """
@@ -124,6 +154,17 @@ class ComplianceExecutor:
             )
             deleted = cursor.rowcount
             conn.commit()
+            
+        if self.chroma_client:
+            try:
+                for collection_name in ["skill_index", "execution_logs"]:
+                    try:
+                        col = self.chroma_client.get_collection(collection_name)
+                        col.delete(where={"timestamp": {"$lt": expiration_time}})
+                    except ValueError:
+                        pass
+            except Exception as e:
+                logger.error(f"Failed to sweep ChromaDB collections: {e}")
             
         if deleted > 0:
             logger.info(f"Swept {deleted} expired telemetry records (TTL {ttl_hours} hours).")

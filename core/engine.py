@@ -39,6 +39,7 @@ except ImportError:
 from .prompt import get_system_prompt, get_safety_context
 from .hardware import probe_gpu, probe_cpu_disk, get_ssh_telemetry
 from .compliance_executor import ComplianceExecutor
+from .vector_memory import get_memory
 from .hybrid_router import (
     select_model_group, stream_complete, INFERENCE_TIMEOUT_SECS,
     detect_hardware_capability, InferenceAuthError, get_last_routing_tier,
@@ -164,7 +165,7 @@ class KriyaLoopEngine:
         self._safety = get_safety_context()
         self._running = False
         self._last_watchdog_ping: float = 0.0
-        self.compliance_executor = ComplianceExecutor()
+        self.compliance_executor = ComplianceExecutor(chroma_client=get_memory().client)
 
         if sdnotify is not None:
             self._sd = sdnotify.SystemdNotifier()
@@ -752,18 +753,8 @@ class KriyaLoopEngine:
         async def health():
             return {"status": "ok", "iteration": engine_ref._state.iteration}
 
-        @app.post("/inject")
-        async def inject(request: Request):
-            try:
-                data = await request.json()
-            except Exception:
-                return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
-            cmd = data.get("command") or data.get("instruction") or data.get("task")
-            if not cmd:
-                return JSONResponse(status_code=400, content={"error": "Missing 'command' field"})
-            engine_ref._pending_injections.append(str(cmd))
-            log.info(f"> STATE API: Injected user task: {cmd}")
-            return {"status": "accepted", "command": cmd}
+        from .ipc_server import attach_ipc_routes
+        attach_ipc_routes(app, engine_ref)
 
         @app.post("/api/v1/config/route")
         async def route_config(request: Request):
