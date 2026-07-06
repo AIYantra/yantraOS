@@ -15,7 +15,7 @@ class ComplianceExecutor:
     Implements a simulated TPM 2.0 PCR register for cryptographic consent tracking
     and enforces data mortality (automated telemetry TTL) in compliance with DPDPA.
     """
-    def __init__(self, db_path="consent_ledger.db", chroma_client=None):
+    def __init__(self, db_path="/var/lib/yantra/consent_ledger.db", chroma_client=None):
         self.db_path = db_path
         self.chroma_client = chroma_client
         self._init_keys()
