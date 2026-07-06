@@ -496,7 +496,17 @@ class KriyaLoopEngine:
                 await self._send_host_intent(action_type, target)
             elif script:
                 if sandbox.is_operational:
-                    sandbox_result = await sandbox.execute(script)
+                    try:
+                        sandbox_result = await asyncio.wait_for(sandbox.execute(script), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        log.error("> CRITICAL: Sandbox execution timed out after 30s. Forcing kill.")
+                        await sandbox.cleanup_stale_containers()
+                        self._state.consecutive_failures += 1
+                        ts_entry = "> ERROR: Sandbox Execution Failed (Code: TIMEOUT) - execution exceeded 30s"
+                        self._state.thought_stream.append(ts_entry)
+                        if len(self._state.thought_stream) > 200:
+                            self._state.thought_stream = self._state.thought_stream[-200:]
+                        continue
                 else:
                     log.warning("> SANDBOX: Operational status DEGRADED (Live ISO). Executing script via local subprocess fallback...")
                     proc = await asyncio.create_subprocess_shell(
@@ -530,6 +540,13 @@ class KriyaLoopEngine:
                 else:
                     log.warning(f"> ERROR: Action '{action_type}' FAILED. Escalating stderr to LLM context for self-healing retry...")
                     self._state.consecutive_failures += 1
+                    
+                    tail = (stderr_text[-100:] if len(stderr_text) > 100 else stderr_text).strip() or "No stderr output"
+                    ts_entry = f"> ERROR: Sandbox Execution Failed (Code: {sandbox_result.exit_code}) - {tail}"
+                    self._state.thought_stream.append(ts_entry)
+                    if len(self._state.thought_stream) > 200:
+                        self._state.thought_stream = self._state.thought_stream[-200:]
+                        
                     self._state.conversation_history.append({
                         "role": "user",
                         "content": f"Action '{action_type}' failed with exit code {sandbox_result.exit_code}. Stderr: {stderr_text}"
