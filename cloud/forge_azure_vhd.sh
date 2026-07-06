@@ -64,12 +64,12 @@ readonly -a PACSTRAP_PACKAGES=(
 # Python execution matrix shipped inside the venv.
 readonly -a YANTRA_PIP_PACKAGES=(
   "fastapi" "uvicorn[standard]" "litellm" "chromadb"
-  "docker" "sdnotify" "pynvml" "textual" "rich"
+  "docker" "sdnotify" "pynvml" "textual" "rich" "aiogram" "aiohttp"
 )
 
 # Systemd units enabled via systemctl --root=.
 readonly -a YANTRA_SERVICES=(
-  "yantra.service" "yantra-host-executor.service"
+  "yantra.service" "yantra-host-executor.service" "yantra-telegram.service"
 )
 readonly -a BASE_SERVICES=(
   "docker.service" "systemd-networkd.service"

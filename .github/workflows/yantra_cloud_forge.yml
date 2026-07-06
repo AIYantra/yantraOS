@@ -34,6 +34,15 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: 2.5 Inject Telegram Secrets
+        run: |
+          cat <<EOF > host_secrets.env
+          TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          TELEGRAM_OPERATOR_CHAT_ID="${{ secrets.TELEGRAM_OPERATOR_CHAT_ID }}"
+          EOF
+          sudo chown root:yantra host_secrets.env
+          sudo chmod 0640 host_secrets.env
+
       - name: 3. Forge Azure VHD
         run: sudo bash cloud/forge_azure_vhd.sh
 

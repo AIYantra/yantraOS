@@ -1,0 +1,32 @@
+[Unit]
+Description=YantraOS Telegram C2 Gateway
+Documentation=https://github.com/yantraos/yantra
+BindsTo=yantra.service
+After=yantra.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yantra_daemon
+Group=yantra
+EnvironmentFile=-/etc/yantra/host_secrets.env
+ExecStart=/opt/yantra/venv/bin/python3 /opt/yantra/core/telegram_gateway.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+
+# Security Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target
