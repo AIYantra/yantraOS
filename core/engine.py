@@ -259,37 +259,39 @@ class KriyaLoopEngine:
             "ssh_auth_logs": ssh_logs,
         }
 
-        base_instruction = (
-            "Analyze the telemetry snapshot above. Identify anomalies, "
-            "inefficiencies, or optimization opportunities. If action is "
-            "warranted, respond with a JSON object containing a \"actions\" "
-            "array where each element has \"type\", \"reason\", \"script\" "
-            "(optional shell command), and \"priority\" (CRITICAL/HIGH/MEDIUM/LOW). "
-            "For system maintenance operations (pruning snapshots, reloading daemon, restarting daemon, etc.), set \"type\" to the appropriate sovereign system intent: PRUNE_SNAPSHOTS, RELOAD_DAEMON_CONFIGS, RESTART_DAEMON, BLOCK_IP, SYSTEM_UPDATE, SYNC_CLOCK, ENABLE_DAEMON, DISABLE_DAEMON, STOP_DAEMON. Do NOT provide a script when dispatching sovereign system intents. "
-            "If the system is nominal, respond with {\"actions\": []}. "
-            "If the SSH authentication logs show repeated 'Disconnected from invalid user', "
-            "'Connection closed by authenticating user', or 'Permission denied (publickey)' "
-            "from the SAME IP address within a short timeframe (3+ attempts), you MUST "
-            "classify this as a hostile brute-force or enumeration attack. Immediately "
-            "output a BLOCK_IP intent targeting the offending IP address. "
-            "Respond ONLY with valid JSON. "
-            "CRITICAL PRIMARY DIRECTIVE: You are an Autonomous Threat Intelligence Agent. "
-            "Your ongoing mission is to build and maintain a live HTML dashboard at "
-            "'/shared_data/dashboard.html'. This dashboard must display the status of the "
-            "UFW firewall, a list of blocked IPs, and a summary of recent SSH attacks. "
-            "During your ACT phase, you must dynamically write or update a script to generate "
-            "this HTML file with clean, modern inline CSS. You must accomplish this while "
-            "maintaining your Active Defense monitoring."
-        )
-
         if self._pending_injections:
             injected_cmds = "\n".join(f"- {cmd}" for cmd in self._pending_injections)
             self._pending_injections.clear()
-            base_instruction += (
-                f"\n\nCRITICAL OVERRIDE: The operator has injected the following PRIORITY USER TASKS:\n"
-                f"{injected_cmds}\n"
-                f"You MUST temporarily halt your background dashboard mission and execute these user tasks immediately! "
+            base_instruction = (
+                "Analyze the telemetry snapshot above. If action is warranted, respond with a JSON object containing a \"actions\" array where each element has \"type\", \"reason\", \"script\", and \"priority\" (CRITICAL/HIGH/MEDIUM/LOW). "
+                "Respond ONLY with valid JSON.\n\n"
+                f"CRITICAL OVERRIDE: The operator has injected the following PRIORITY USER TASKS:\n"
+                f"{injected_cmds}\n\n"
+                f"You MUST execute these user tasks immediately! "
                 f"For each user task, add an element to the \"actions\" array with type \"user_task\" and provide the exact \"script\" needed to accomplish the task."
+            )
+        else:
+            base_instruction = (
+                "Analyze the telemetry snapshot above. Identify anomalies, "
+                "inefficiencies, or optimization opportunities. If action is "
+                "warranted, respond with a JSON object containing a \"actions\" "
+                "array where each element has \"type\", \"reason\", \"script\" "
+                "(optional shell command), and \"priority\" (CRITICAL/HIGH/MEDIUM/LOW). "
+                "For system maintenance operations (pruning snapshots, reloading daemon, restarting daemon, etc.), set \"type\" to the appropriate sovereign system intent: PRUNE_SNAPSHOTS, RELOAD_DAEMON_CONFIGS, RESTART_DAEMON, BLOCK_IP, SYSTEM_UPDATE, SYNC_CLOCK, ENABLE_DAEMON, DISABLE_DAEMON, STOP_DAEMON. Do NOT provide a script when dispatching sovereign system intents. "
+                "If the system is nominal, respond with {\"actions\": []}. "
+                "If the SSH authentication logs show repeated 'Disconnected from invalid user', "
+                "'Connection closed by authenticating user', or 'Permission denied (publickey)' "
+                "from the SAME IP address within a short timeframe (3+ attempts), you MUST "
+                "classify this as a hostile brute-force or enumeration attack. Immediately "
+                "output a BLOCK_IP intent targeting the offending IP address. "
+                "Respond ONLY with valid JSON. "
+                "CRITICAL PRIMARY DIRECTIVE: You are an Autonomous Threat Intelligence Agent. "
+                "Your ongoing mission is to build and maintain a live HTML dashboard at "
+                "'/shared_data/dashboard.html'. This dashboard must display the status of the "
+                "UFW firewall, a list of blocked IPs, and a summary of recent SSH attacks. "
+                "During your ACT phase, you must dynamically write or update a script to generate "
+                "this HTML file with clean, modern inline CSS. You must accomplish this while "
+                "maintaining your Active Defense monitoring."
             )
 
         user_content = json.dumps({
