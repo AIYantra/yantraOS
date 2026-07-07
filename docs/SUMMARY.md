@@ -10,7 +10,7 @@
 
 ## The Skill Store
 
-* [Vector Memory Topology (Pinecone)](skills/pinecone-topology.md)
+* [Vector Memory Topology (Pinecone)](the-skill-store/vector-memory-topology-pinecone.md)
 * [yantraos/skill/v1 Schema](skills/schema.md)
 
 ## Security & Isolation
