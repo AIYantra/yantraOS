@@ -246,10 +246,9 @@ async def poll_notifications(bot: Bot):
                         notifications = data.get("notifications", [])
                         for notif in notifications:
                             log.info(f"> TELEGRAM: Dispatching Push Notification: {notif}")
-                            escaped_notif = escape_code(notif)
-                            await bot.send_message(OPERATOR_ID, f"🔔 *YantraOS Notification*\n\n```\n{escaped_notif}\n```", parse_mode="MarkdownV2")
-            except Exception:
-                pass  # Daemon might be offline or restarting
+                            await bot.send_message(OPERATOR_ID, f"🔔 YantraOS Notification\n\n{notif}")
+            except Exception as e:
+                log.error(f"> TELEGRAM: Notification loop error: {e}")
             await asyncio.sleep(3)
 
 
