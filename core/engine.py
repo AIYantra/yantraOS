@@ -489,7 +489,8 @@ class KriyaLoopEngine:
 
             if action_type in {
                 "SYSTEM_UPDATE", "RESTART_DAEMON", "ENABLE_DAEMON", "DISABLE_DAEMON",
-                "STOP_DAEMON", "PRUNE_SNAPSHOTS", "SYNC_CLOCK", "RELOAD_DAEMON_CONFIGS", "BLOCK_IP"
+                "STOP_DAEMON", "PRUNE_SNAPSHOTS", "SYNC_CLOCK", "RELOAD_DAEMON_CONFIGS", "BLOCK_IP",
+                "UPDATE_SECRETS"
             }:
                 target = action.get("target", "")
                 if not target and action.get("script"):
@@ -542,9 +543,11 @@ class KriyaLoopEngine:
                 if sandbox_result.exit_code == 0:
                     log.info(f"> SYSTEM: Autonomous Action '{action_type}' COMPLETED SUCCESSFULLY.")
                     self._state.consecutive_failures = 0
+                    self._state.notifications.append(f"Task Completed Successfully\nAction: {action_type}\nExit Code: 0\nOutput:\n{stdout_text[:500]}")
                 else:
                     log.warning(f"> ERROR: Action '{action_type}' FAILED. Escalating stderr to LLM context for self-healing retry...")
                     self._state.consecutive_failures += 1
+                    self._state.notifications.append(f"Task Failed\nAction: {action_type}\nExit Code: {sandbox_result.exit_code}\nError:\n{stderr_text[:500]}")
                     
                     tail = (stderr_text[-100:] if len(stderr_text) > 100 else stderr_text).strip() or "No stderr output"
                     ts_entry = f"> ERROR: Sandbox Execution Failed (Code: {sandbox_result.exit_code}) - {tail}"
