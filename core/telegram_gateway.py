@@ -138,8 +138,6 @@ async def cmd_task(message: Message):
     # Send both command/instruction for compatibility with existing parser, 
     # and action/payload to fulfill specific user requirement.
     payload = {
-        "action": "inject_thought", 
-        "payload": instruction,
         "command": instruction,
     }
 
@@ -188,8 +186,6 @@ async def cmd_system(message: Message):
     action = parts[1].upper()
     
     payload = {
-        "action": "inject_thought", 
-        "payload": f"EXECUTE INTENT: {action}",
         "command": f"EXECUTE INTENT: {action}"
     }
     async with aiohttp.ClientSession() as session:
