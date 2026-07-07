@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import os
 import time
 from fastapi import APIRouter, Request, HTTPException, FastAPI
 from fastapi.responses import JSONResponse
@@ -7,6 +8,30 @@ from pydantic import BaseModel
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+# ── Localhost enforcement for privileged endpoints ────────────────────────────
+# These IPs are considered loopback / local-only origins.
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _assert_localhost(request: Request) -> None:
+    """Reject non-loopback callers with 403 Forbidden.
+    
+    Privileged endpoints (secrets injection, route mutation) MUST only be
+    callable from the local machine. This is a defense-in-depth guard —
+    even if uvicorn is accidentally bound to 0.0.0.0 in the future, these
+    endpoints remain inaccessible to remote hosts.
+    """
+    client_host = request.client.host if request.client else None
+    if client_host not in _LOOPBACK_HOSTS:
+        log.warning(
+            f"> SECURITY: Rejected privileged request from non-local host {client_host}"
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Privileged endpoint restricted to localhost only."
+        )
+
 
 # Rigid Pydantic models with extra="forbid" for Data Minimization (DPDPA Section 8)
 # Compatible with both Pydantic v1 and v2 via 'class Config:'
@@ -47,6 +72,7 @@ def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
     """
     Attach strict IPC routes to the FastAPI application.
     Rejects any payload containing undocumented keys.
+    Privileged endpoints enforce localhost-only access.
     """
     
     @app.get("/state")
@@ -117,7 +143,8 @@ def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
         return {"status": "accepted", "command": cmd}
 
     @app.post("/api/v1/config/route", response_model_exclude_unset=True)
-    async def route_config(payload: RouteConfig):
+    async def route_config(request: Request, payload: RouteConfig):
+        _assert_localhost(request)
         tier = payload.tier
         model = payload.model
         if tier not in ["traffic_cop", "heavy_lifter"] or not model:
@@ -130,7 +157,8 @@ def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
         return JSONResponse(status_code=500, content={"error": "Engine config not available"})
 
     @app.post("/api/v1/secrets/update", response_model_exclude_unset=True)
-    async def update_secrets(payload: SecretUpdate):
+    async def update_secrets(request: Request, payload: SecretUpdate):
+        _assert_localhost(request)
         provider = payload.provider
         key = payload.key
         

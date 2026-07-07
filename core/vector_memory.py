@@ -30,6 +30,10 @@ AZURE_EMBED_DEPLOYMENT = os.getenv("AZURE_EMBED_DEPLOYMENT", "text-embedding-3-s
 # Timeout for embedding HTTP calls (seconds) — prevents Kriya Loop stalls
 EMBED_TIMEOUT = 15.0
 
+# Fallback zero-vector dimensionality — must match the primary embedding model output.
+# nomic-embed-text produces 768-dim vectors.
+FALLBACK_EMBED_DIM = 768
+
 
 class OllamaEmbeddingFunction:
     """
@@ -76,7 +80,7 @@ class OllamaEmbeddingFunction:
 
         # --- LAST RESORT: Return zero vectors so ChromaDB doesn't crash ---
         log.error("VECTOR: All embedding backends offline. Returning zero vectors.")
-        return [[0.0] * 384 for _ in input]
+        return [[0.0] * FALLBACK_EMBED_DIM for _ in input]
 
     def _embed_via_ollama(self, texts: list[str]) -> list[list[float]] | None:
         """Call Ollama POST /api/embed for batch embedding."""

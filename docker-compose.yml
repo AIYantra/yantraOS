@@ -24,4 +24,4 @@ services:
       # Shared data corridor for Threat Intelligence Dashboard
       - ./yantra_data:/shared_data
     ports:
-      - "50000:50000"
+      - "127.0.0.1:50000:50000"

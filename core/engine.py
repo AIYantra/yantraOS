@@ -260,7 +260,14 @@ class KriyaLoopEngine:
         }
 
         if self._pending_injections:
-            injected_cmds = "\n".join(f"- {cmd}" for cmd in self._pending_injections)
+            # Sanitize injections to mitigate LLM prompt injection attacks
+            sanitized = []
+            for raw_cmd in self._pending_injections:
+                # Strip control characters and limit length
+                clean = "".join(c for c in raw_cmd if c.isprintable() or c in ('\n', '\t'))
+                clean = clean[:500]  # cap per-injection length
+                sanitized.append(clean)
+            injected_cmds = "\n".join(f"- {cmd}" for cmd in sanitized)
             self._pending_injections.clear()
             base_instruction = (
                 "Analyze the telemetry snapshot above. If action is warranted, respond with a JSON object containing a \"actions\" array where each element has \"type\", \"reason\", \"script\", and \"priority\" (CRITICAL/HIGH/MEDIUM/LOW). "
@@ -728,7 +735,7 @@ class KriyaLoopEngine:
 
             config = uvicorn.Config(
                 app,
-                host="0.0.0.0",
+                host="127.0.0.1",
                 port=50000,
                 log_level="warning",
                 loop="asyncio",
