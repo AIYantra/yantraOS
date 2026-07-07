@@ -141,3 +141,9 @@ def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
         }
         engine_ref._state.pending_actions.append(action)
         return {"status": "success", "message": f"Queued privileged UPDATE_SECRETS for {provider}"}
+
+    @app.get("/notifications")
+    async def get_notifications():
+        notifications = list(engine_ref._state.notifications)
+        engine_ref._state.notifications.clear()
+        return JSONResponse(content={"notifications": notifications})

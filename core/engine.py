@@ -146,6 +146,7 @@ class KriyaState:
     ssh_auth_logs: str = ""
     blocked_ips: list[dict] = field(default_factory=list)
     thought_stream: list[str] = field(default_factory=list)
+    notifications: list[str] = field(default_factory=list)
 
 
 # ── Config ────────────────────────────────────────────────────────
@@ -497,6 +498,7 @@ class KriyaLoopEngine:
                     if ip_match:
                         target = ip_match.group(0)
                 await self._send_host_intent(action_type, target)
+                self._state.notifications.append(f"✅ Successfully executed injected intent: {action_type}")
             elif script:
                 if sandbox.is_operational:
                     try:

@@ -234,9 +234,31 @@ async def default_handler(message: Message):
     )
 
 
+async def poll_notifications(bot: Bot):
+    """Background task to continuously poll the engine for push notifications."""
+    log.info("> TELEGRAM: Starting async notification poller...")
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get("http://127.0.0.1:50000/notifications", timeout=2) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        notifications = data.get("notifications", [])
+                        for notif in notifications:
+                            log.info(f"> TELEGRAM: Dispatching Push Notification: {notif}")
+                            await bot.send_message(OPERATOR_ID, f"🔔 *YantraOS Notification*\n\n`{escape_code(notif)}`", parse_mode="MarkdownV2")
+            except Exception:
+                pass  # Daemon might be offline or restarting
+            await asyncio.sleep(3)
+
+
 async def main():
     log.info("> TELEGRAM: Starting YantraOS C2 Gateway...")
     bot = Bot(token=TOKEN)
+    
+    # Start the background notification polling task
+    polling_task = asyncio.create_task(poll_notifications(bot))
+    
     try:
         while True:
             try:
@@ -245,6 +267,7 @@ async def main():
                 log.warning(f"> FLEET: C2 Gateway Partition Detected. Entering degraded backoff. ({exc})")
                 await asyncio.sleep(60)
     finally:
+        polling_task.cancel()
         await bot.session.close()
 
 if __name__ == "__main__":
