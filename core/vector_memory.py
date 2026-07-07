@@ -14,7 +14,7 @@ import chromadb
 
 log = logging.getLogger(__name__)
 
-CHROMA_PATH = "/shared_data/chroma"
+CHROMA_PATH = "/var/lib/yantra/chromadb"
 COLLECTION_NAME = "skill_index"
 
 # Ollama embedding config
