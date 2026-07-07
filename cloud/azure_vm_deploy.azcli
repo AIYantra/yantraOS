@@ -228,7 +228,17 @@ create_managed_disk() {
   if az disk show \
     --name "${DISK_NAME}" \
     --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
-    log_warn "Managed Disk '${DISK_NAME}' already exists. Deleting and recreating..."
+    log_warn "Managed Disk '${DISK_NAME}' already exists."
+    
+    # We MUST delete the VM first if it exists, otherwise the disk cannot be deleted
+    if az vm show --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
+        log_warn "VM '${VM_NAME}' exists and holds a lock on the disk. Deleting VM first..."
+        az vm delete --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}" --yes --no-wait
+        log_info "Waiting for VM deletion to complete..."
+        az vm wait --deleted --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}"
+    fi
+    
+    log_warn "Deleting existing Managed Disk..."
     az disk delete \
       --name "${DISK_NAME}" \
       --resource-group "${RESOURCE_GROUP}" \
