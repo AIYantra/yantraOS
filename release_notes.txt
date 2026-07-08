@@ -24,3 +24,12 @@ This ISO has been purged via our Amnesia Protocol. The daemon runs entirely as t
 
 Getting Started:
 Please consult the QUICKSTART.md for instructions on flashing the ISO, establishing a network uplink via nmtui, and monitoring your node's live telemetry.
+
+---
+
+### v0.2.4 Update (Security Hardening & Telegram C2 Gateway)
+- **IPC Security Hardening:** Enforcement of `127.0.0.1` binding for all privileged endpoints (`/inject`, `/api/v1/config/route`) and strict Pydantic payload data minimization.
+- **Telegram C2 Gateway:** Introduction of asynchronous push notifications, a retry queue (up to 3x) for failed intents, and the `/debug` diagnostic command.
+- **Cognitive Override Fix:** Permanent resolution of LLM hallucinations during priority injections via strict prompt isolation and conversation history wiping.
+- **Cloud Forge Integrity:** Automated injection of Azure OpenAI API keys into VHD builds.
+- **File Hygiene:** Cleanup of large JSON telemetry dumps and audit logs.

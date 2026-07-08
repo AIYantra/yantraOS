@@ -17,3 +17,4 @@
 
 * [The Amnesia Protocol](security/amnesia-protocol.md)
 * [Hardware Routing & Fallbacks](security/hardware-routing.md)
+* [IPC Bridge Hardening](security/ipc-hardening.md)

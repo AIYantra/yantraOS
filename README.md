@@ -207,6 +207,11 @@ An AI that can execute system commands is one of the most dangerous systems ever
   [X]  Secrets exfiltration via LLM prompt injection
   [✓]  MITIGATION: Secrets in /etc/yantra/secrets.env (0400).
               Never interpolated into model context.
+
+  [X]  IPC Bridge interception / Remote execution
+  [✓]  MITIGATION: All privileged IPC endpoints (like /inject) are strictly 
+              bound to 127.0.0.1. Pydantic data minimization drops 
+              all extra payload keys to prevent payload smuggling.
 ```
 
 **The Execution Chain (for any system action):**
@@ -247,7 +252,17 @@ The UI is not a control panel. It is a **real-time window into the daemon's cons
 
 ---
 
-## `07` · THE STACK
+## `07` · THE TELEGRAM C2 GATEWAY
+
+YantraOS operates headless and fully isolated, but you are always in control. The **Telegram C2 Gateway** provides an out-of-band asynchronous control plane directly from your smartphone.
+
+- **Proactive Push Notifications:** Receive instant text-based push alerts whenever a priority injected task completes or fails. The Engine features a built-in retry queue (up to 3x) and prevents LLM cognitive hallucinations by temporarily wiping conversation history when you issue a direct priority command.
+- **Diagnostic Controls:** Run `/debug` at any time to instantly pull live environment variables, Azure OpenAI credentials integrity, and hybrid router state straight to your phone.
+- **Mission Overrides:** Inject sovereign intents like `/api UPDATE_SECRETS` or `/task Analyze the memory dump` from anywhere in the world.
+
+---
+
+## `08` · THE STACK
 
 ```
 LAYER               TECHNOLOGY              PURPOSE
