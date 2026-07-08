@@ -1,0 +1,17 @@
+name: Auto Assign Issues & PRs
+
+on:
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened]
+
+jobs:
+  auto-assign:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign OSYantra
+        uses: pozil/auto-assign-issue@v1
+        with:
+          assignees: OSYantra
+          repo-token: ${{ secrets.GITHUB_TOKEN }}

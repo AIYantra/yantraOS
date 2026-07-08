@@ -1,0 +1,49 @@
+name: Bug Report
+description: Create a report to help us improve YantraOS
+title: "[BUG] "
+labels: ["bug"]
+assignees:
+  - OSYantra
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please ensure you are running the latest version before filing an issue.
+  - type: input
+    id: version
+    attributes:
+      label: YantraOS Version
+      description: What version of YantraOS are you running? (e.g., v0.2.4)
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce the issue?
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Daemon Logs
+      description: Paste any relevant logs from `/var/log/yantra/engine.log` or the systemd journal here.
+      render: shell
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Security Disclaimer
+      options:
+        - label: I confirm this is NOT a security vulnerability (if it is, please email security@yantraos.com).
+          required: true
