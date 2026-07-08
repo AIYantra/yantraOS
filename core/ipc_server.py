@@ -76,12 +76,70 @@ def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
     """
     @app.get("/debug")
     async def get_debug():
+        import subprocess
+        diag = {}
+        
+        # 1. Check if secrets file exists and its contents (redacted)
+        secrets_path = "/etc/yantra/host_secrets.env"
         try:
-            import subprocess
-            out = subprocess.check_output(["journalctl", "-u", "yantra.service", "-n", "100", "--no-pager"], text=True)
-            return JSONResponse(content={"logs": out})
+            if os.path.exists(secrets_path):
+                with open(secrets_path) as f:
+                    lines = f.readlines()
+                redacted = []
+                for line in lines:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        key, val = line.split("=", 1)
+                        redacted.append(f"{key}={'SET('+str(len(val))+'chars)' if val else 'EMPTY'}")
+                    else:
+                        redacted.append(line)
+                diag["secrets_file"] = redacted
+            else:
+                diag["secrets_file"] = "FILE_NOT_FOUND"
         except Exception as e:
-            return JSONResponse(content={"logs": str(e)})
+            diag["secrets_file"] = f"READ_ERROR: {e}"
+        
+        # 2. Check env vars the router needs
+        env_keys = ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", 
+                     "YANTRA_AZURE_KEY", "AZURE_DEPLOYMENT_COP",
+                     "AZURE_DEPLOYMENT_HEAVY", "TELEGRAM_BOT_TOKEN",
+                     "TELEGRAM_OPERATOR_CHAT_ID"]
+        env_status = {}
+        for k in env_keys:
+            v = os.environ.get(k, "")
+            env_status[k] = f"SET({len(v)}chars)" if v else "NOT_SET"
+        diag["env_vars"] = env_status
+        
+        # 3. Check systemd drop-in
+        dropin = "/etc/systemd/system/yantra.service.d/env.conf"
+        try:
+            if os.path.exists(dropin):
+                with open(dropin) as f:
+                    diag["dropin"] = f.read().strip()
+            else:
+                diag["dropin"] = "FILE_NOT_FOUND"
+        except Exception as e:
+            diag["dropin"] = f"READ_ERROR: {e}"
+        
+        # 4. Check router state
+        try:
+            router = engine_ref._router
+            diag["router_local_only"] = getattr(router, "local_only_mode", "N/A")
+            diag["router_last_tier"] = getattr(router, "last_routing_tier", "N/A")
+        except Exception as e:
+            diag["router_state"] = f"ERROR: {e}"
+        
+        # 5. Try journalctl (may fail due to permissions)
+        try:
+            out = subprocess.check_output(
+                ["journalctl", "-u", "yantra.service", "-n", "50", "--no-pager"],
+                text=True, timeout=5
+            )
+            diag["journal_tail"] = out[-2000:] if len(out) > 2000 else out
+        except Exception as e:
+            diag["journal"] = f"ERROR: {e}"
+        
+        return JSONResponse(content=diag)
 
     @app.get("/state")
     async def get_state():

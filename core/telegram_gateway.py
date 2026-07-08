@@ -171,12 +171,43 @@ async def cmd_report(message: Message):
 async def cmd_debug(message: Message):
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get("http://127.0.0.1:50000/debug", timeout=10) as resp:
+            async with session.get("http://127.0.0.1:50000/debug", timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
-                logs = data.get("logs", "No logs")
-                await safe_send(None, f"Debug Logs:\n{logs[-3500:]}", message, is_reply=True)
+                
+                lines = ["=== YantraOS Debug Diagnostics ===\n"]
+                
+                # Secrets file
+                sf = data.get("secrets_file", "UNKNOWN")
+                if isinstance(sf, list):
+                    lines.append("Secrets File: FOUND")
+                    for entry in sf:
+                        lines.append(f"  {entry}")
+                else:
+                    lines.append(f"Secrets File: {sf}")
+                
+                lines.append("")
+                
+                # Env vars
+                env = data.get("env_vars", {})
+                lines.append("Environment Variables:")
+                for k, v in env.items():
+                    lines.append(f"  {k}: {v}")
+                
+                lines.append("")
+                
+                # Drop-in
+                lines.append(f"Systemd Drop-in: {data.get('dropin', 'UNKNOWN')}")
+                
+                lines.append("")
+                
+                # Router state
+                lines.append(f"Router local_only: {data.get('router_local_only', 'UNKNOWN')}")
+                lines.append(f"Router last_tier: {data.get('router_last_tier', 'UNKNOWN')}")
+                
+                report = "\n".join(lines)
+                await safe_send(None, report, message, is_reply=True)
         except Exception as exc:
-            await safe_send(None, f"Error fetching debug logs: {exc}", message, is_reply=True)
+            await safe_send(None, f"Error fetching debug: {exc}", message, is_reply=True)
 
 @dp.message(Command("task"))
 async def cmd_task(message: Message):
