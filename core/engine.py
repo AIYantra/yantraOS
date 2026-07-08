@@ -279,8 +279,9 @@ class KriyaLoopEngine:
                 "Respond ONLY with valid JSON.\n\n"
                 f"CRITICAL OVERRIDE: The operator has injected the following PRIORITY USER TASKS:\n"
                 f"{injected_cmds}\n\n"
-                f"You MUST execute these user tasks immediately! "
-                f"For each user task, add an element to the \"actions\" array with type \"user_task\" and provide the exact \"script\" needed to accomplish the task."
+                f"You MUST execute these tasks immediately! "
+                f"If the task starts with 'EXECUTE INTENT:', you MUST set the action \"type\" to the specified intent name (e.g., RESTART_DAEMON, SYSTEM_UPDATE) and omit the script. "
+                f"For all other general tasks, set the \"type\" to \"user_task\" and provide the exact bash or python \"script\" needed to accomplish the task."
             )
         else:
             base_instruction = (
@@ -310,6 +311,9 @@ class KriyaLoopEngine:
             "telemetry": telemetry_context,
             "instruction": base_instruction,
         }, indent=2)
+
+        if _has_injections:
+            self._state.conversation_history.clear()
 
         if not self._state.conversation_history:
             self._state.conversation_history.append({"role": "system", "content": self._system_prompt})
@@ -572,7 +576,8 @@ class KriyaLoopEngine:
                     if ip_match:
                         target = ip_match.group(0)
                 await self._send_host_intent(action_type, target)
-                self._state.notifications.append(f"✅ Successfully executed injected intent: {action_type}")
+                if action_type == "UPDATE_SECRETS" or "C2" in str(action.get("reason", "")):
+                    self._state.notifications.append(f"✅ Successfully executed injected intent: {action_type}")
             elif script:
                 if sandbox.is_operational:
                     try:
