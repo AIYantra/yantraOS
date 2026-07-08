@@ -127,9 +127,7 @@ def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
 
     @app.post("/inject", response_model_exclude_unset=True)
     async def inject(request: Request, payload: InjectCommand):
-        rejected = _assert_localhost(request, "/inject")
-        if rejected:
-            return rejected
+        _assert_localhost(request)
         # Extract command safely after strict validation
         cmd = payload.command or payload.instruction or payload.task
         if not cmd:
