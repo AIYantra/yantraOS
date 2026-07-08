@@ -74,7 +74,15 @@ def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
     Rejects any payload containing undocumented keys.
     Privileged endpoints enforce localhost-only access.
     """
-    
+    @app.get("/debug")
+    async def get_debug():
+        try:
+            import subprocess
+            out = subprocess.check_output(["journalctl", "-u", "yantra.service", "-n", "100", "--no-pager"], text=True)
+            return JSONResponse(content={"logs": out})
+        except Exception as e:
+            return JSONResponse(content={"logs": str(e)})
+
     @app.get("/state")
     async def get_state():
         s = engine_ref._state

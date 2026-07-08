@@ -167,6 +167,17 @@ async def cmd_report(message: Message):
     await safe_send(None, report, message, is_reply=True)
 
 
+@dp.message(Command("debug"))
+async def cmd_debug(message: Message):
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get("http://127.0.0.1:50000/debug", timeout=10) as resp:
+                data = await resp.json()
+                logs = data.get("logs", "No logs")
+                await safe_send(None, f"Debug Logs:\n{logs[-3500:]}", message, is_reply=True)
+        except Exception as exc:
+            await safe_send(None, f"Error fetching debug logs: {exc}", message, is_reply=True)
+
 @dp.message(Command("task"))
 async def cmd_task(message: Message):
     """Package the instruction and POST it to /inject."""
