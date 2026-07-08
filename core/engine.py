@@ -414,8 +414,6 @@ class KriyaLoopEngine:
         # be retried on the next iteration. Track retry count so we don't
         # retry forever.
         if _has_injections and not accumulated_response:
-            if not hasattr(self, "_injection_retry_count"):
-                self._injection_retry_count = 0
             self._injection_retry_count += 1
             max_retries = 3
             if self._injection_retry_count >= max_retries:
@@ -721,7 +719,7 @@ class KriyaLoopEngine:
 
         if _FASTAPI_AVAILABLE:
             asyncio.create_task(self._run_state_server())
-            log.info("> STATE API: HTTP state server launching on 0.0.0.0:50000")
+            log.info("> STATE API: HTTP state server launching on 127.0.0.1:50000")
 
         self._sd_notify("STATUS=Initializing Docker sandbox...")
         sandbox_status = await sandbox.initialize()

@@ -33,6 +33,7 @@ venv/
 
 # ── Databases / Storage ───────────────────────────────
 *.sqlite3
+*.db
 chroma_storage/
 
 # ── React / Vite frontend ─────────────────────────────
