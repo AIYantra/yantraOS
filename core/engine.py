@@ -162,6 +162,7 @@ class KriyaLoopEngine:
     def __init__(self) -> None:
         self._state = KriyaState()
         self._pending_injections: list[str] = []
+        self._injection_retry_count: int = 0
         self._system_prompt = get_system_prompt()
         self._safety = get_safety_context()
         self._running = False
@@ -259,16 +260,20 @@ class KriyaLoopEngine:
             "ssh_auth_logs": ssh_logs,
         }
 
-        if self._pending_injections:
+        # Snapshot current injections — do NOT clear yet. We only clear after
+        # a successful LLM response, so failed attempts can be retried.
+        _current_injections = list(self._pending_injections)
+        _has_injections = bool(_current_injections)
+
+        if _has_injections:
             # Sanitize injections to mitigate LLM prompt injection attacks
             sanitized = []
-            for raw_cmd in self._pending_injections:
+            for raw_cmd in _current_injections:
                 # Strip control characters and limit length
                 clean = "".join(c for c in raw_cmd if c.isprintable() or c in ('\n', '\t'))
                 clean = clean[:500]  # cap per-injection length
                 sanitized.append(clean)
             injected_cmds = "\n".join(f"- {cmd}" for cmd in sanitized)
-            self._pending_injections.clear()
             base_instruction = (
                 "Analyze the telemetry snapshot above. If action is warranted, respond with a JSON object containing a \"actions\" array where each element has \"type\", \"reason\", \"script\", and \"priority\" (CRITICAL/HIGH/MEDIUM/LOW). "
                 "Respond ONLY with valid JSON.\n\n"
@@ -403,6 +408,45 @@ class KriyaLoopEngine:
                     "CLOUD_ONLY hardware, keeping cloud routing."
                 )
 
+        # ── Injection retry tracking ─────────────────────────────────────
+        # If the LLM failed while processing injections (accumulated_response
+        # is empty), the injections are still in _pending_injections and will
+        # be retried on the next iteration. Track retry count so we don't
+        # retry forever.
+        if _has_injections and not accumulated_response:
+            if not hasattr(self, "_injection_retry_count"):
+                self._injection_retry_count = 0
+            self._injection_retry_count += 1
+            max_retries = 3
+            if self._injection_retry_count >= max_retries:
+                log.error(
+                    f"> REASON: Injected tasks failed after {max_retries} LLM attempts. "
+                    "Dropping injections and notifying operator."
+                )
+                task_list = ", ".join(_current_injections[:3])
+                self._state.notifications.append(
+                    f"Task Failed\n"
+                    f"Your injected task(s) could not be processed after {max_retries} attempts.\n"
+                    f"The LLM inference is failing (check API keys and connectivity).\n"
+                    f"Tasks: {task_list}"
+                )
+                self._pending_injections.clear()
+                self._injection_retry_count = 0
+            else:
+                log.warning(
+                    f"> REASON: LLM failed with pending injections "
+                    f"(attempt {self._injection_retry_count}/{max_retries}). "
+                    "Tasks will be retried next iteration."
+                )
+                self._state.notifications.append(
+                    f"Task Delayed\n"
+                    f"Your injected task is being retried (attempt {self._injection_retry_count}/{max_retries}).\n"
+                    f"The LLM inference engine did not respond."
+                )
+        elif _has_injections and accumulated_response:
+            # Reset retry counter on successful LLM response with injections
+            self._injection_retry_count = 0
+
         if accumulated_response:
             try:
                 cleaned = accumulated_response.strip()
@@ -441,6 +485,11 @@ class KriyaLoopEngine:
                 
                 self._state.conversation_history.append({"role": "assistant", "content": cleaned})
                 
+                # SUCCESS — LLM responded. Now it is safe to consume the injections.
+                if _has_injections:
+                    self._pending_injections.clear()
+                    log.info("> REASON: Injected tasks consumed after successful LLM response.")
+                
                 log.info(
                     f"> REASONING: LLM proposed "
                     f"{len(self._state.pending_actions)} action(s)."
@@ -451,6 +500,16 @@ class KriyaLoopEngine:
                     "Falling back to deterministic heuristics."
                 )
                 self._state.pending_actions.clear()
+                # JSON parse failure with injections = still consume them
+                # (the LLM responded but with garbage — retrying won't help)
+                if _has_injections:
+                    self._pending_injections.clear()
+                    self._state.notifications.append(
+                        f"Task Failed\nYour injected task could not be processed — "
+                        f"the LLM returned an unparseable response.\n"
+                        f"Tasks: {', '.join(_current_injections[:3])}\n"
+                        f"Error: {exc}"
+                    )
 
         if not self._state.pending_actions:
             is_live_usb = not os.path.exists("/opt/yantra")
