@@ -1,51 +1,87 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="340" height="28" viewBox="0 0 340 28" role="img" aria-label="Microsoft for Startups: Founders Hub">
-  <title>Microsoft for Startups — Founders Hub</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="110" viewBox="0 0 520 110" role="img" aria-label="Microsoft for Startups — Proud to Partner">
+  <title>Microsoft for Startups — YantraOS</title>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#1a1a2e"/>
-      <stop offset="1" stop-color="#0f1120"/>
-    </linearGradient>
-    <linearGradient id="rightBg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#0063b1"/>
-      <stop offset="1" stop-color="#004e8c"/>
-    </linearGradient>
+    <radialGradient id="azureBloom" cx="100%" cy="0%" r="60%">
+      <stop offset="0%" stop-color="#0064FF" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#0064FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cyanBloom" cx="0%" cy="100%" r="50%">
+      <stop offset="0%" stop-color="#00E5FF" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#00E5FF" stop-opacity="0"/>
+    </radialGradient>
   </defs>
 
-  <!-- Outer border / shape -->
-  <rect width="340" height="28" fill="url(#bg)"/>
+  <!-- Background -->
+  <rect width="520" height="110" fill="#080C14"/>
+  <!-- Azure top-right glow -->
+  <rect width="520" height="110" fill="url(#azureBloom)"/>
+  <!-- Cyan bottom-left glow -->
+  <rect width="520" height="110" fill="url(#cyanBloom)"/>
 
-  <!-- Left section: dark label -->
-  <rect width="195" height="28" fill="#161b22"/>
+  <!-- CRT scan-line texture (subtle horizontal stripes) -->
+  <rect width="520" height="1" y="0"  fill="#00E5FF" fill-opacity="0.04"/>
+  <rect width="520" height="1" y="4"  fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="8"  fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="12" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="16" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="20" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="24" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="28" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="32" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="36" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="40" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="44" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="48" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="52" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="56" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="60" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="64" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="68" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="72" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="76" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="80" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="84" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="88" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="92" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="96" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="100" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="104" fill="#00E5FF" fill-opacity="0.03"/>
+  <rect width="520" height="1" y="108" fill="#00E5FF" fill-opacity="0.03"/>
 
-  <!-- Right section: Microsoft blue -->
-  <rect x="195" width="145" height="28" fill="url(#rightBg)"/>
+  <!-- Outer border -->
+  <rect width="520" height="110" fill="none" stroke="#00E5FF" stroke-opacity="0.28" stroke-width="1"/>
 
-  <!-- Right section cyan top-line accent -->
-  <rect x="195" width="145" height="2" fill="#00E5FF" opacity="0.7"/>
+  <!-- Microsoft 4-color logo (11×11 squares, 2px gap) -->
+  <rect x="20" y="22" width="11" height="11" fill="#F25022"/>
+  <rect x="33" y="22" width="11" height="11" fill="#7FBA00"/>
+  <rect x="20" y="35" width="11" height="11" fill="#00A4EF"/>
+  <rect x="33" y="35" width="11" height="11" fill="#FFB900"/>
 
-  <!-- Microsoft 4-color logo (2×2 grid of squares at 7px each, 1px gap) -->
-  <rect x="10" y="9" width="7" height="7" fill="#F25022"/>
-  <rect x="19" y="9" width="7" height="7" fill="#7FBA00"/>
-  <rect x="10" y="17" width="7" height="7" fill="#00A4EF"/>
-  <rect x="19" y="17" width="7" height="7" fill="#FFB900"/>
+  <!-- Microsoft wordmark -->
+  <text x="52" y="35"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="14"
+    font-weight="600"
+    fill="#E5E2E1">Microsoft</text>
 
-  <!-- Left label text: "MICROSOFT FOR STARTUPS" -->
-  <text x="33" y="19"
-    font-family="Verdana,Geneva,DejaVu Sans,sans-serif"
-    font-size="10"
-    font-weight="bold"
-    letter-spacing="0.8"
-    fill="#e0e0e0">MICROSOFT FOR STARTUPS</text>
+  <!-- Live pulse dot (top-right) -->
+  <circle cx="500" cy="28" r="4" fill="#00E5FF" fill-opacity="0.85"/>
 
-  <!-- Separator line -->
-  <rect x="193" width="2" height="28" fill="#00E5FF" opacity="0.4"/>
+  <!-- Horizontal rule under header -->
+  <line x1="20" y1="56" x2="500" y2="56" stroke="#00E5FF" stroke-opacity="0.12" stroke-width="1"/>
 
-  <!-- Right value text: "FOUNDERS HUB" -->
-  <text x="252" y="19"
-    font-family="Verdana,Geneva,DejaVu Sans,sans-serif"
-    font-size="10"
-    font-weight="bold"
-    letter-spacing="0.8"
-    fill="#ffffff"
-    text-anchor="middle">FOUNDERS HUB</text>
+  <!-- "PROUD TO PARTNER WITH" label -->
+  <text x="20" y="76"
+    font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+    font-size="9"
+    letter-spacing="1.6"
+    fill="#849396">PROUD TO PARTNER WITH</text>
+
+  <!-- "Microsoft for Startups" headline -->
+  <text x="20" y="97"
+    font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+    font-size="17"
+    font-weight="800"
+    letter-spacing="-0.5"
+    fill="#00E5FF">Microsoft for Startups</text>
 </svg>
