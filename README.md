@@ -660,7 +660,27 @@ git push origin feature/your-feature
 
 ---
 
-## `15` · LICENSE & ACKNOWLEDGMENTS
+## `15` · MICROSOFT FOR STARTUPS
+
+<div align="center">
+
+<br/>
+
+[![Microsoft for Startups](./assets/microsoft-partnership.svg)](https://microsoft.com/startups)
+
+<br/>
+
+> **YantraOS is a proud member of the Microsoft for Startups Founders Hub.**
+> Extreme scale simulation, continuous cognitive loop testing, and deep-tech cloud forge
+> environments are subsidized and executed natively via **Microsoft Azure** global infrastructure.
+
+<br/>
+
+</div>
+
+---
+
+## `16` · LICENSE & ACKNOWLEDGMENTS
 
 Released under the **MIT License** — open metal, open mind.
 
