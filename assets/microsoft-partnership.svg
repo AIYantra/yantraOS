@@ -1,145 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="860" height="280" viewBox="0 0 860 280">
+<svg xmlns="http://www.w3.org/2000/svg" width="340" height="28" viewBox="0 0 340 28" role="img" aria-label="Microsoft for Startups: Founders Hub">
+  <title>Microsoft for Startups — Founders Hub</title>
   <defs>
-    <linearGradient id="capBar1" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#00E5FF"/>
-      <stop offset="100%" stop-color="#00E5FF" stop-opacity="0.3"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a1a2e"/>
+      <stop offset="1" stop-color="#0f1120"/>
     </linearGradient>
-    <linearGradient id="capBar2" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#0077FF"/>
-      <stop offset="100%" stop-color="#0077FF" stop-opacity="0.3"/>
+    <linearGradient id="rightBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0063b1"/>
+      <stop offset="1" stop-color="#004e8c"/>
     </linearGradient>
-    <radialGradient id="azureBloom" cx="100%" cy="0%" r="55%">
-      <stop offset="0%" stop-color="#0064FF" stop-opacity="0.22"/>
-      <stop offset="100%" stop-color="#0064FF" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="cyanBloom" cx="0%" cy="100%" r="40%">
-      <stop offset="0%" stop-color="#00E5FF" stop-opacity="0.08"/>
-      <stop offset="100%" stop-color="#00E5FF" stop-opacity="0"/>
-    </radialGradient>
   </defs>
 
-  <!-- Background -->
-  <rect width="860" height="280" fill="#080C14"/>
+  <!-- Outer border / shape -->
+  <rect width="340" height="28" fill="url(#bg)"/>
 
-  <!-- Azure top-right bloom -->
-  <rect width="860" height="280" fill="url(#azureBloom)"/>
+  <!-- Left section: dark label -->
+  <rect width="195" height="28" fill="#161b22"/>
 
-  <!-- Cyan bottom-left bloom -->
-  <rect width="860" height="280" fill="url(#cyanBloom)"/>
+  <!-- Right section: Microsoft blue -->
+  <rect x="195" width="145" height="28" fill="url(#rightBg)"/>
 
-  <!-- CRT scan-lines (subtle) -->
-  <rect width="860" height="280" fill="none"
-    style="background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,229,255,0.015) 2px, rgba(0,229,255,0.015) 4px)"/>
+  <!-- Right section cyan top-line accent -->
+  <rect x="195" width="145" height="2" fill="#00E5FF" opacity="0.7"/>
 
-  <!-- Outer border -->
-  <rect width="860" height="280" fill="none" stroke="#00E5FF" stroke-opacity="0.28" stroke-width="1"/>
+  <!-- Microsoft 4-color logo (2×2 grid of squares at 7px each, 1px gap) -->
+  <rect x="10" y="9" width="7" height="7" fill="#F25022"/>
+  <rect x="19" y="9" width="7" height="7" fill="#7FBA00"/>
+  <rect x="10" y="17" width="7" height="7" fill="#00A4EF"/>
+  <rect x="19" y="17" width="7" height="7" fill="#FFB900"/>
 
-  <!-- === LEFT PANEL: Identity + Statement === -->
+  <!-- Left label text: "MICROSOFT FOR STARTUPS" -->
+  <text x="33" y="19"
+    font-family="Verdana,Geneva,DejaVu Sans,sans-serif"
+    font-size="10"
+    font-weight="bold"
+    letter-spacing="0.8"
+    fill="#e0e0e0">MICROSOFT FOR STARTUPS</text>
 
-  <!-- Vertical divider -->
-  <line x1="280" y1="0" x2="280" y2="280" stroke="#00E5FF" stroke-opacity="0.1" stroke-width="1"/>
+  <!-- Separator line -->
+  <rect x="193" width="2" height="28" fill="#00E5FF" opacity="0.4"/>
 
-  <!-- HEADER: Microsoft logo squares -->
-  <rect x="28" y="24" width="11" height="11" fill="#F25022"/>
-  <rect x="41" y="24" width="11" height="11" fill="#7FBA00"/>
-  <rect x="28" y="37" width="11" height="11" fill="#00A4EF"/>
-  <rect x="41" y="37" width="11" height="11" fill="#FFB900"/>
-
-  <!-- Microsoft wordmark -->
-  <text x="60" y="35" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="600" fill="#E5E2E1">Microsoft</text>
-
-  <!-- Live pulse dot -->
-  <circle cx="260" cy="32" r="3" fill="#00E5FF" opacity="0.9"/>
-
-  <!-- Top border under header -->
-  <line x1="28" y1="58" x2="252" y2="58" stroke="#00E5FF" stroke-opacity="0.12" stroke-width="1"/>
-
-  <!-- PROUD TO PARTNER WITH label -->
-  <text x="28" y="80" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" letter-spacing="1.5" fill="#849396" text-transform="uppercase">PROUD TO PARTNER WITH</text>
-
-  <!-- Microsoft for Startups headline -->
-  <text x="28" y="102" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="800" letter-spacing="-0.5" fill="#00E5FF">Microsoft for Startups</text>
-
-  <!-- Divider -->
-  <line x1="28" y1="118" x2="252" y2="118" stroke="#00E5FF" stroke-opacity="0.08" stroke-width="1"/>
-
-  <!-- FOUNDERS HUB label -->
-  <text x="28" y="138" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" letter-spacing="1.2" fill="#3b494c">FOUNDERS HUB · CLOUD FORGE PROGRAM</text>
-
-  <!-- Built for headline -->
-  <text x="28" y="165" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="800" letter-spacing="-1" fill="#FFFFFF">Built for</text>
-  <text x="28" y="192" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="800" letter-spacing="-1" fill="#00E5FF">Extreme Scale.</text>
-
-  <!-- Body copy -->
-  <text x="28" y="218" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#849396">Deep-tech cognitive environments subsidized and</text>
-  <text x="28" y="234" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#849396">executed natively via Azure global infrastructure.</text>
-
-  <!-- Capability tags -->
-  <rect x="28" y="250" width="52" height="16" fill="none" stroke="#00E5FF" stroke-opacity="0.18" stroke-width="1"/>
-  <circle cx="36" cy="258" r="2.5" fill="#00E5FF"/>
-  <text x="42" y="262" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#849396">OPENAI</text>
-
-  <rect x="86" y="250" width="36" height="16" fill="none" stroke="#00E5FF" stroke-opacity="0.18" stroke-width="1"/>
-  <circle cx="94" cy="258" r="2.5" fill="#00E5FF"/>
-  <text x="100" y="262" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#849396">HPC</text>
-
-  <rect x="128" y="250" width="66" height="16" fill="none" stroke="#00E5FF" stroke-opacity="0.18" stroke-width="1"/>
-  <circle cx="136" cy="258" r="2.5" fill="#00E5FF"/>
-  <text x="142" y="262" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#849396">AI SEARCH</text>
-
-  <rect x="200" y="250" width="74" height="16" fill="none" stroke="#00E5FF" stroke-opacity="0.18" stroke-width="1"/>
-  <circle cx="208" cy="258" r="2.5" fill="#00E5FF"/>
-  <text x="214" y="262" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" fill="#849396">STACK EDGE</text>
-
-  <!-- === RIGHT PANEL: Capability Bars === -->
-
-  <!-- AZURE-POWERED CAPABILITIES label -->
-  <text x="300" y="38" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" letter-spacing="1.5" fill="#3b494c">AZURE-POWERED CAPABILITIES</text>
-
-  <!-- Divider -->
-  <line x1="300" y1="48" x2="832" y2="48" stroke="#00E5FF" stroke-opacity="0.08" stroke-width="1"/>
-
-  <!-- Capability 1: COGNITIVE INFERENCE -->
-  <rect x="300" y="10" width="4" height="4" fill="#00E5FF" transform="translate(0, 58)"/>
-  <text x="312" y="72" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" letter-spacing="0.8" fill="#849396">COGNITIVE INFERENCE</text>
-  <text x="820" y="72" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#00E5FF" text-anchor="end">ACTIVE</text>
-  <rect x="300" y="78" width="532" height="2" fill="#FFFFFF" opacity="0.05"/>
-  <rect x="300" y="78" width="532" height="2" fill="url(#capBar1)"/>
-
-  <!-- Capability 2: BARE-METAL COMPUTE -->
-  <rect x="300" y="104" width="4" height="4" fill="#0077FF"/>
-  <text x="312" y="118" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" letter-spacing="0.8" fill="#849396">BARE-METAL COMPUTE</text>
-  <text x="820" y="118" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#00E5FF" text-anchor="end">ACTIVE</text>
-  <rect x="300" y="124" width="532" height="2" fill="#FFFFFF" opacity="0.05"/>
-  <rect x="300" y="124" width="532" height="2" fill="url(#capBar2)"/>
-
-  <!-- Capability 3: VECTOR MEMORY STORE -->
-  <rect x="300" y="150" width="4" height="4" fill="#00E5FF"/>
-  <text x="312" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" letter-spacing="0.8" fill="#849396">VECTOR MEMORY STORE</text>
-  <text x="820" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#00E5FF" text-anchor="end">ACTIVE</text>
-  <rect x="300" y="170" width="532" height="2" fill="#FFFFFF" opacity="0.05"/>
-  <rect x="300" y="170" width="532" height="2" fill="url(#capBar1)"/>
-
-  <!-- Capability 4: SKILL FORGE · CI/CD -->
-  <rect x="300" y="196" width="4" height="4" fill="#0077FF"/>
-  <text x="312" y="210" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" letter-spacing="0.8" fill="#849396">SKILL FORGE · CI/CD</text>
-  <text x="820" y="210" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#00E5FF" text-anchor="end">ACTIVE</text>
-  <rect x="300" y="216" width="532" height="2" fill="#FFFFFF" opacity="0.05"/>
-  <rect x="300" y="216" width="532" height="2" fill="url(#capBar2)"/>
-
-  <!-- Capability 5: GLOBAL INFRA · AZURE -->
-  <rect x="300" y="242" width="4" height="4" fill="#00E5FF"/>
-  <text x="312" y="256" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" letter-spacing="0.8" fill="#849396">GLOBAL INFRA · AZURE</text>
-  <text x="820" y="256" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#00E5FF" text-anchor="end">ACTIVE</text>
-  <rect x="300" y="262" width="532" height="2" fill="#FFFFFF" opacity="0.05"/>
-  <rect x="300" y="262" width="532" height="2" fill="url(#capBar1)"/>
-
-  <!-- === BOTTOM STATUS BAR === -->
-  <rect x="0" y="268" width="860" height="12" fill="#00E5FF" fill-opacity="0.05"/>
-  <line x1="0" y1="268" x2="860" y2="268" stroke="#00E5FF" stroke-opacity="0.12" stroke-width="1"/>
-
-  <!-- Pulse dot -->
-  <circle cx="16" cy="274" r="2.5" fill="#00E5FF"/>
-  <text x="26" y="278" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" letter-spacing="1" fill="#00E5FF">KRIYA LOOP · AZURE BACKED · OPERATIONAL</text>
-  <text x="844" y="278" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8.5" fill="#3b494c" text-anchor="end">v0.2.4</text>
+  <!-- Right value text: "FOUNDERS HUB" -->
+  <text x="252" y="19"
+    font-family="Verdana,Geneva,DejaVu Sans,sans-serif"
+    font-size="10"
+    font-weight="bold"
+    letter-spacing="0.8"
+    fill="#ffffff"
+    text-anchor="middle">FOUNDERS HUB</text>
 </svg>

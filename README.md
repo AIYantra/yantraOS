@@ -28,6 +28,10 @@
 
 <br/>
 
+[![Microsoft for Startups — Founders Hub](./assets/microsoft-partnership.svg)](https://microsoft.com/startups)
+
+<br/>
+
 [![Open Collective Backers](https://img.shields.io/opencollective/backers/yantraos?style=for-the-badge&logo=opencollective&logoColor=ffffff&label=Backers&color=7B2FBE)](https://opencollective.com/yantraos)
 [![Open Collective Sponsors](https://img.shields.io/opencollective/sponsors/yantraos?style=for-the-badge&logo=opencollective&logoColor=ffffff&label=Sponsors&color=E040FB)](https://opencollective.com/yantraos#section-contributors)
 
@@ -660,27 +664,7 @@ git push origin feature/your-feature
 
 ---
 
-## `15` · MICROSOFT FOR STARTUPS
-
-<div align="center">
-
-<br/>
-
-[![Microsoft for Startups](./assets/microsoft-partnership.svg)](https://microsoft.com/startups)
-
-<br/>
-
-> **YantraOS is a proud member of the Microsoft for Startups Founders Hub.**
-> Extreme scale simulation, continuous cognitive loop testing, and deep-tech cloud forge
-> environments are subsidized and executed natively via **Microsoft Azure** global infrastructure.
-
-<br/>
-
-</div>
-
----
-
-## `16` · LICENSE & ACKNOWLEDGMENTS
+## `15` · LICENSE & ACKNOWLEDGMENTS
 
 Released under the **MIT License** — open metal, open mind.
 
