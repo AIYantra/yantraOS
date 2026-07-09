@@ -21,8 +21,8 @@
 [![Platform](https://img.shields.io/badge/Platform-Arch%20Linux%20%7C%20Bare%20Metal-1793D1?style=for-the-badge&logo=archlinux&logoColor=white)](https://archlinux.org)
 [![Engine](https://img.shields.io/badge/Engine-Python%203.12%20%7C%20Asyncio-FFD700?style=for-the-badge&logo=python&logoColor=000000)](https://python.org)
 [![UI](https://img.shields.io/badge/Interface-Pure%20TUI%20%7C%20Textual-0057FF?style=for-the-badge&logo=gnometerminal&logoColor=white)]()
-[![Status](https://img.shields.io/badge/Status-v1.0%20Alpha%20RC2-00FF41?style=for-the-badge)]()
-[![Phase](https://img.shields.io/badge/Phase%206-Alpha%20RC2%20Survival%20Gates-FFB000?style=for-the-badge)]()
+[![Status](https://img.shields.io/badge/Status-v0.2.4-00FF41?style=for-the-badge)](https://github.com/AIYantra/YantraOS/releases/tag/v0.2.4)
+[![Phase](https://img.shields.io/badge/Phase-Security%20Hardening%20%2B%20Telegram%20C2-FFB000?style=for-the-badge)](CHANGELOG.md)
 [![IPC](https://img.shields.io/badge/IPC-UNIX%20Domain%20Socket-00FF41?style=for-the-badge&logo=linux&logoColor=000000)]()
 [![Discord](https://img.shields.io/discord/1472285496129355847?color=00E5FF&label=Sovereign%20Fleet&logo=discord&logoColor=101010&style=for-the-badge)](https://discord.gg/tkg6XQBPpK)
 
