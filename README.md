@@ -28,10 +28,6 @@
 
 <br/>
 
-[![Microsoft for Startups — Founders Hub](./assets/microsoft-partnership.svg)](https://microsoft.com/startups)
-
-<br/>
-
 [![Open Collective Backers](https://img.shields.io/opencollective/backers/yantraos?style=for-the-badge&logo=opencollective&logoColor=ffffff&label=Backers&color=7B2FBE)](https://opencollective.com/yantraos)
 [![Open Collective Sponsors](https://img.shields.io/opencollective/sponsors/yantraos?style=for-the-badge&logo=opencollective&logoColor=ffffff&label=Sponsors&color=E040FB)](https://opencollective.com/yantraos#section-contributors)
 
