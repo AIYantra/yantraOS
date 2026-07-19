@@ -6,14 +6,13 @@
 # node from the VHD artifact produced by forge_azure_vhd.sh:
 #
 #   create_resource_group → upload_vhd → create_managed_disk
-#     → configure_nsg → provision_vm → output_telemetry_endpoint
+#     → configure_nsg → provision_vm → output_deployment_summary
 #
 # SECURITY MATRIX
 #   • Port 22 (SSH): EXPLICITLY BLOCKED — SSH is excised from YantraOS cloud
 #     nodes. No sshd is installed, no keys exist, no inbound SSH is permitted.
-#   • Port 50000 (TCP): OPEN — WebHUD telemetry stream from the Kriya Loop.
-#     This is the SOLE ingress point for operational visibility.
-#   • All other ports: DEFAULT DENY (Azure NSG implicit rule).
+#   • Control API: loopback-only inside the VM; no public NSG rule.
+#   • All inbound ports: DEFAULT DENY (plus an explicit audit rule).
 #
 # VM SPECIFICATION
 #   • SKU: Standard_B2s (2 vCPU, 4 GiB RAM — burstable, cost-optimized)
@@ -51,8 +50,9 @@ NSG_NAME="yantra-nsg"
 VNET_NAME="yantra-vnet"
 SUBNET_NAME="yantra-subnet"
 NIC_NAME="yantra-nic"
-PUBLIC_IP_NAME="yantra-pip"
-WEBHUD_PORT=50000
+DEPLOYMENT_ID="${YANTRA_DEPLOYMENT_ID:-$(date -u +%Y%m%d%H%M%S)}"
+KEY_VAULT_NAME=""
+KEY_VAULT_SECRET_NAME=""
 
 # Resolve VHD path relative to script location.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
@@ -77,7 +77,8 @@ parse_args() {
       --vhd-path)       VHD_PATH="$2";       shift 2 ;;
       --storage-account) STORAGE_ACCOUNT="$2"; shift 2 ;;
       --disk-name)      DISK_NAME="$2";      shift 2 ;;
-      --webhud-port)    WEBHUD_PORT="$2";    shift 2 ;;
+      --key-vault-name) KEY_VAULT_NAME="$2"; shift 2 ;;
+      --key-vault-secret-name) KEY_VAULT_SECRET_NAME="$2"; shift 2 ;;
       --help|-h)
         echo "Usage: $0 [OPTIONS]"
         echo ""
@@ -89,12 +90,23 @@ parse_args() {
         echo "  --vhd-path PATH         Path to .vhd file (default: ${VHD_PATH})"
         echo "  --storage-account NAME  Storage account for VHD upload (default: ${STORAGE_ACCOUNT})"
         echo "  --disk-name NAME        Managed Disk name (default: ${DISK_NAME})"
-        echo "  --webhud-port PORT      WebHUD telemetry port (default: ${WEBHUD_PORT})"
+        echo "  --key-vault-name NAME   Runtime-secret Key Vault name (required)"
+        echo "  --key-vault-secret-name NAME  Runtime env secret name (required)"
         exit 0
         ;;
       *) die "Unknown option: $1 (use --help for usage)" ;;
     esac
   done
+  [[ "${DEPLOYMENT_ID}" =~ ^[A-Za-z0-9-]{1,32}$ ]] \
+    || die "YANTRA_DEPLOYMENT_ID must contain only letters, digits, and hyphens."
+  [[ "${KEY_VAULT_NAME}" =~ ^[A-Za-z0-9-]{3,24}$ ]] \
+    || die "--key-vault-name is required and invalid."
+  [[ "${KEY_VAULT_SECRET_NAME}" =~ ^[A-Za-z0-9-]{1,127}$ ]] \
+    || die "--key-vault-secret-name is required and invalid."
+  VM_NAME="${VM_NAME}-${DEPLOYMENT_ID}"
+  DISK_NAME="${DISK_NAME}-${DEPLOYMENT_ID}"
+  NSG_NAME="${NSG_NAME}-${DEPLOYMENT_ID}"
+  NIC_NAME="${NIC_NAME}-${DEPLOYMENT_ID}"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -127,7 +139,7 @@ preflight() {
   log_info "  Storage Acct   : ${STORAGE_ACCOUNT}"
   log_info "  Disk Name      : ${DISK_NAME}"
   log_info "  NSG            : ${NSG_NAME}"
-  log_info "  WebHUD Port    : ${WEBHUD_PORT}"
+  log_info "  Control API     : LOOPBACK ONLY"
   log_info "  SSH             : BLOCKED (excised)"
   log_info "──────────────────────────────────────────"
 }
@@ -174,42 +186,49 @@ upload_vhd() {
     log_ok "Storage account created: ${sa_lower}"
   fi
 
-  # 3.2 — Retrieve storage account key.
-  local storage_key
-  storage_key="$(az storage account keys list \
-    --account-name "${sa_lower}" \
-    --resource-group "${RESOURCE_GROUP}" \
-    --query '[0].value' -o tsv)"
-  [[ -n "${storage_key}" ]] || die "Failed to retrieve storage account key."
-  log_ok "Storage account key retrieved."
+  # Data-plane RBAC is distinct from management-plane Contributor access.
+  # Fail before upload unless the OIDC principal can list blob containers.
+  local rbac_ready=0 attempt
+  for attempt in {1..12}; do
+    if az storage container list \
+      --account-name "${sa_lower}" \
+      --auth-mode login \
+      --num-results 1 >/dev/null 2>&1; then
+      rbac_ready=1
+      break
+    fi
+    sleep 10
+  done
+  (( rbac_ready == 1 )) || die \
+    "OIDC principal lacks Storage Blob Data Contributor on ${sa_lower}, or RBAC has not propagated."
 
-  # 3.3 — Create blob container.
+  # 3.2 — Create blob container with the OIDC/RBAC identity. Account keys are
+  # never retrieved or exposed in process arguments.
   if az storage container show \
     --name "${CONTAINER_NAME}" \
     --account-name "${sa_lower}" \
-    --account-key "${storage_key}" >/dev/null 2>&1; then
+    --auth-mode login >/dev/null 2>&1; then
     log_info "Container '${CONTAINER_NAME}' already exists."
   else
     az storage container create \
       --name "${CONTAINER_NAME}" \
       --account-name "${sa_lower}" \
-      --account-key "${storage_key}" \
+      --auth-mode login \
       --output none
     log_ok "Blob container created: ${CONTAINER_NAME}"
   fi
 
-  # 3.4 — Upload VHD as a page blob (required for Azure Managed Disk creation).
+  # 3.3 — Upload VHD as a page blob (required for Azure Managed Disk creation).
   local blob_name
-  blob_name="$(basename "${VHD_PATH}")"
+  blob_name="${DEPLOYMENT_ID}-$(basename "${VHD_PATH}")"
   log_info "Uploading VHD to blob storage (this may take several minutes)..."
   az storage blob upload \
     --account-name "${sa_lower}" \
-    --account-key "${storage_key}" \
+    --auth-mode login \
     --container-name "${CONTAINER_NAME}" \
     --name "${blob_name}" \
     --file "${VHD_PATH}" \
     --type page \
-    --overwrite \
     --output none
   log_ok "VHD uploaded: ${sa_lower}/${CONTAINER_NAME}/${blob_name}"
 
@@ -228,24 +247,7 @@ create_managed_disk() {
   if az disk show \
     --name "${DISK_NAME}" \
     --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
-    log_warn "Managed Disk '${DISK_NAME}' already exists."
-    
-    # We MUST delete the VM first if it exists, otherwise the disk cannot be deleted
-    if az vm show --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
-        log_warn "VM '${VM_NAME}' exists and holds a lock on the disk. Deleting VM first..."
-        az vm delete --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}" --yes --no-wait
-        log_info "Waiting for VM deletion to complete..."
-        az vm wait --deleted --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}"
-    fi
-    
-    log_warn "Deleting existing Managed Disk..."
-    az disk delete \
-      --name "${DISK_NAME}" \
-      --resource-group "${RESOURCE_GROUP}" \
-      --yes --no-wait \
-      --output none
-    # Wait for deletion to propagate.
-    sleep 10
+    die "Versioned managed disk '${DISK_NAME}' already exists; choose a new deployment ID."
   fi
 
   # Determine VHD size in bytes for --upload-size-bytes (required for import).
@@ -274,8 +276,7 @@ create_managed_disk() {
 # PHASE 5 — Configure Network Security Group
 #   Security Matrix:
 #     DENY  TCP/22  (SSH excised — no sshd, no keys, no port)
-#     ALLOW TCP/50000 (WebHUD telemetry from Kriya Loop)
-#     DENY  * (Azure default implicit deny-all)
+#     DENY  * (Azure default implicit deny-all; explicit rule for auditability)
 # ══════════════════════════════════════════════════════════════════════════════
 configure_nsg() {
   log_info "═══ PHASE 5: configure_nsg ═══"
@@ -284,7 +285,7 @@ configure_nsg() {
   if az network nsg show \
     --name "${NSG_NAME}" \
     --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
-    log_info "NSG '${NSG_NAME}' already exists."
+    die "Versioned NSG '${NSG_NAME}' already exists; choose a new deployment ID."
   else
     az network nsg create \
       --name "${NSG_NAME}" \
@@ -313,24 +314,21 @@ configure_nsg() {
     --output none
   log_ok "NSG Rule: DENY TCP/22 (SSH excised — defense-in-depth)."
 
-  # 5.3 — ALLOW WebHUD telemetry (port 50000).
-  #        The Kriya Loop streams real-time telemetry on this port.
-  #        Priority 200 = evaluated after SSH deny.
-  az network nsg rule create \
+  # 5.3 — Remove the legacy public API rule from existing NSGs.
+  local legacy_rule
+  legacy_rule="$(az network nsg rule list \
     --nsg-name "${NSG_NAME}" \
     --resource-group "${RESOURCE_GROUP}" \
-    --name "AllowWebHUD-Inbound" \
-    --priority 200 \
-    --direction Inbound \
-    --access Allow \
-    --protocol Tcp \
-    --source-address-prefixes '*' \
-    --source-port-ranges '*' \
-    --destination-address-prefixes '*' \
-    --destination-port-ranges "${WEBHUD_PORT}" \
-    --description "WebHUD telemetry stream from Kriya Loop daemon." \
-    --output none
-  log_ok "NSG Rule: ALLOW TCP/${WEBHUD_PORT} (WebHUD telemetry)."
+    --query "[?name=='AllowWebHUD-Inbound'].name | [0]" \
+    --output tsv)"
+  if [[ "${legacy_rule}" == "AllowWebHUD-Inbound" ]]; then
+    az network nsg rule delete \
+      --nsg-name "${NSG_NAME}" \
+      --resource-group "${RESOURCE_GROUP}" \
+      --name "${legacy_rule}" \
+      --output none
+  fi
+  log_ok "Legacy public API ingress rule absent."
 
   # 5.4 — Deny all other inbound (explicit for auditability, Azure denies by default).
   az network nsg rule create \
@@ -345,11 +343,11 @@ configure_nsg() {
     --source-port-ranges '*' \
     --destination-address-prefixes '*' \
     --destination-port-ranges '*' \
-    --description "Default deny-all inbound. Only WebHUD (TCP/${WEBHUD_PORT}) is permitted." \
+    --description "Default deny-all inbound; the Yantra control API is loopback-only." \
     --output none
   log_ok "NSG Rule: DENY ALL other inbound (explicit deny-all)."
 
-  log_ok "Security matrix configured: SSH=BLOCKED, WebHUD=${WEBHUD_PORT}=OPEN, *=DENY."
+  log_ok "Security matrix configured: all inbound traffic denied."
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -377,28 +375,11 @@ provision_vm() {
     log_ok "VNet created: ${VNET_NAME}/10.0.0.0/16 → ${SUBNET_NAME}/10.0.1.0/24"
   fi
 
-  # 6.2 — Public IP (Static, Standard SKU for Gen2 compatibility).
-  if az network public-ip show \
-    --name "${PUBLIC_IP_NAME}" \
-    --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
-    log_info "Public IP '${PUBLIC_IP_NAME}' already exists."
-  else
-    az network public-ip create \
-      --name "${PUBLIC_IP_NAME}" \
-      --resource-group "${RESOURCE_GROUP}" \
-      --location "${LOCATION}" \
-      --allocation-method Static \
-      --sku Standard \
-      --version IPv4 \
-      --output none
-    log_ok "Public IP created: ${PUBLIC_IP_NAME} (Static, Standard)"
-  fi
-
-  # 6.3 — Network Interface Card (NIC) bound to Subnet + NSG + Public IP.
+  # 6.2 — Network Interface Card bound to the private subnet and deny-all NSG.
   if az network nic show \
     --name "${NIC_NAME}" \
     --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
-    log_info "NIC '${NIC_NAME}' already exists."
+    die "Versioned NIC '${NIC_NAME}' already exists."
   else
     az network nic create \
       --name "${NIC_NAME}" \
@@ -407,17 +388,31 @@ provision_vm() {
       --vnet-name "${VNET_NAME}" \
       --subnet "${SUBNET_NAME}" \
       --network-security-group "${NSG_NAME}" \
-      --public-ip-address "${PUBLIC_IP_NAME}" \
       --output none
     log_ok "NIC created: ${NIC_NAME} (bound to ${NSG_NAME})"
   fi
 
   # 6.4 — Create the Gen2 VM from the Managed Disk.
   log_info "Provisioning Gen2 VM: ${VM_NAME} (${VM_SIZE})..."
+  local cloud_config
+  cloud_config="$(mktemp)"
+  chmod 0600 "${cloud_config}"
+  cat > "${cloud_config}" <<CLOUDEOF
+#cloud-config
+write_files:
+  - path: /etc/yantra/keyvault.json
+    owner: root:root
+    permissions: '0600'
+    content: |
+      {"vault_url":"https://${KEY_VAULT_NAME}.vault.azure.net","secret_name":"${KEY_VAULT_SECRET_NAME}"}
+runcmd:
+  - [systemctl, restart, yantra-provision-secrets.service]
+  - [bash, -c, "for i in \$(seq 1 90); do if systemctl is-active --quiet yantra.service; then echo YANTRA_HEALTHY >/dev/ttyS0; exit 0; fi; sleep 10; done; exit 1"]
+CLOUDEOF
   if az vm show \
     --name "${VM_NAME}" \
     --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
-    log_warn "VM '${VM_NAME}' already exists. Skipping creation."
+    die "Versioned VM '${VM_NAME}' already exists; choose a new deployment ID."
   else
     az vm create \
       --name "${VM_NAME}" \
@@ -427,16 +422,50 @@ provision_vm() {
       --nics "${NIC_NAME}" \
       --attach-os-disk "${DISK_NAME}" \
       --os-type Linux \
+      --assign-identity \
+      --custom-data "${cloud_config}" \
       --output none
     log_ok "VM provisioned: ${VM_NAME} (${VM_SIZE}, Gen2 UEFI)"
   fi
+  rm -f -- "${cloud_config}"
 
-  # 6.5 — Enable boot diagnostics for Azure serial console access.
+  az vm wait --created --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}"
+  local provisioning_state
+  provisioning_state="$(az vm show --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}" --query provisioningState -o tsv)"
+  [[ "${provisioning_state}" == "Succeeded" ]] \
+    || die "Candidate VM failed provisioning validation: ${provisioning_state}"
+
   az vm boot-diagnostics enable \
     --name "${VM_NAME}" \
     --resource-group "${RESOURCE_GROUP}" \
-    --output none 2>/dev/null || log_warn "Boot diagnostics could not be enabled."
-  log_ok "Boot diagnostics enabled (serial console access)."
+    --output none
+
+  local principal_id vault_id
+  principal_id="$(az vm identity show --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}" --query principalId -o tsv)"
+  vault_id="$(az keyvault show --name "${KEY_VAULT_NAME}" --query id -o tsv)"
+  [[ -n "${principal_id}" && -n "${vault_id}" ]] \
+    || die "Could not resolve VM identity or Key Vault."
+  az role assignment create \
+    --assignee-object-id "${principal_id}" \
+    --assignee-principal-type ServicePrincipal \
+    --role "Key Vault Secrets User" \
+    --scope "${vault_id}" \
+    --output none >/dev/null
+
+  local candidate_healthy=0 attempt
+  for attempt in {1..90}; do
+    if az vm boot-diagnostics get-boot-log \
+      --name "${VM_NAME}" \
+      --resource-group "${RESOURCE_GROUP}" 2>/dev/null | grep -q 'YANTRA_HEALTHY'; then
+      candidate_healthy=1
+      break
+    fi
+    sleep 10
+  done
+  (( candidate_healthy == 1 )) \
+    || die "Candidate VM failed secret provisioning or Yantra health validation."
+
+  log_ok "Boot diagnostics confirmed the candidate Yantra service is healthy."
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -444,13 +473,6 @@ provision_vm() {
 # ══════════════════════════════════════════════════════════════════════════════
 output_summary() {
   log_info "═══ PHASE 7: deployment_summary ═══"
-
-  # Retrieve the public IP address.
-  local public_ip
-  public_ip="$(az network public-ip show \
-    --name "${PUBLIC_IP_NAME}" \
-    --resource-group "${RESOURCE_GROUP}" \
-    --query ipAddress -o tsv 2>/dev/null)" || public_ip="<pending>"
 
   # Retrieve VM power state.
   local power_state
@@ -467,17 +489,12 @@ output_summary() {
   log_ok "  VM Name        : ${VM_NAME}"
   log_ok "  VM Size        : ${VM_SIZE}"
   log_ok "  Power State    : ${power_state}"
-  log_ok "  Public IP      : ${public_ip}"
-  log_ok ""
-  log_ok "  ┌─────────────────────────────────────────────────────────┐"
-  log_ok "  │  WebHUD Telemetry Endpoint                             │"
-  log_ok "  │  http://${public_ip}:${WEBHUD_PORT}                           │"
-  log_ok "  └─────────────────────────────────────────────────────────┘"
+  log_ok "  Public IP      : NONE"
   log_ok ""
   log_ok "  Security Matrix:"
   log_ok "    ✗ SSH  (TCP/22)    → BLOCKED (excised)"
-  log_ok "    ✓ WebHUD (TCP/${WEBHUD_PORT}) → OPEN"
-  log_ok "    ✗ All other        → DENY (default)"
+  log_ok "    ✗ Control API      → LOOPBACK ONLY"
+  log_ok "    ✗ All inbound      → DENY"
   log_ok ""
   log_ok "  Useful commands:"
   log_ok "    # View serial console output:"

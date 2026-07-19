@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════════
 # YantraOS — Hardened Sandbox Container Image
-# Target: yantra-sandbox:latest
+# Target: yantra-sandbox:3.20.3
 # ═══════════════════════════════════════════════════════════════════
 #
 # Minimal Alpine image with bash + coreutils for script execution.
@@ -8,16 +8,16 @@
 # to enforce least-privilege even before the Docker SDK applies
 # additional runtime constraints (cap_drop, read_only, etc.).
 #
-# This image is built programmatically by SandboxEngine._blocking_init()
-# and is NOT intended to be pushed to any registry.
+# This image is built by the ISO/VHD forge and loaded locally before the broker
+# starts. It is not pulled or built by the runtime broker.
 # ═══════════════════════════════════════════════════════════════════
 
-FROM alpine:latest
+FROM alpine:3.20.3@sha256:029a752048e32e843bd6defe3841186fb8d19a28dae8ec287f433bb9d6d1ad85
 
 # ── Install runtime dependencies ──────────────────────────────────
 # bash:      Required shell for script execution (POSIX sh is too limited)
 # coreutils: GNU echo, date, cat, head, tail, etc.
-RUN apk add --no-cache bash coreutils
+RUN apk add --no-cache bash=5.2.26-r0 coreutils=9.5-r2
 
 # ── Create unprivileged sandbox user ──────────────────────────────
 # UID 1000 / GID 1000 — standard unprivileged user.

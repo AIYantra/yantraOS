@@ -6,9 +6,9 @@ State leakage occurs when the developer's local development environment—such a
 
 YantraOS mitigates this using the **Amnesia Protocol**.
 
-## Pre-flight Sanitization (`build_prep.sh`)
+## Pre-flight Sanitization (`archlive/forge_sovereign_iso.sh`)
 
-Before the `compile_iso.sh` script maps the `/opt/yantra/` host directory into the `airootfs` (the immutable filesystem core of the ISO), the Amnesia Protocol executes an aggressive structural purge of the daemon's internal state.
+Before the forge maps source into `airootfs`, it excludes credentials, databases, caches, and host ownership, then applies a final sanitation pass.
 
 ### 1. PyCache Annihilation
 Compiled Python files (`.pyc`) within `__pycache__` directories retain fragments of code structure and potentially sensitive variables. All such directories are deleted recursively:
@@ -34,8 +34,8 @@ rm -rf /var/lib/yantra/chroma/
 rm -rf /opt/yantra/core/chromadb/
 ```
 
-### 4. Cryptographic Sanitization
-Secret resolution is highly constrained. `GEMINI_API_KEY` and other sensitive environment variables must be securely stripped of formatting anomalies (e.g., unintended shell single quotes `'` or double quotes `"`) before final injection into the immutable `/etc/yantra/host_secrets.env` file.
+### 4. Credential Exclusion
+Operational credentials are never copied into the image. ISO nodes use a boot-media provisioning file; Azure nodes use managed identity and Key Vault. The provisioner validates an allowlist and writes separate root-owned `0600` daemon and Telegram environment files.
 
 ## Zero State Leakage Guarantee
 

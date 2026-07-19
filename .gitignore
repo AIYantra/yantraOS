@@ -1,6 +1,7 @@
 # ── Strict OpSec ──────────────────────────────────────
 *.env
 *.env.*
+!.env.example
 .env.secrets
 .env.local
 secrets.env

@@ -39,9 +39,9 @@ log = logging.getLogger("yantra.snapshot")
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 # The BTRFS subvolume root where YantraOS snapshots live.
-SNAPSHOT_SUBVOL: str = "/@yantra-snapshots"
-SNAPSHOT_MOUNT: str = "/mnt/yantra-snapshots"
-ROOT_SUBVOL: str = "/@"
+SNAPSHOT_SUBVOL: str = "/.snapshots"
+SNAPSHOT_MOUNT: str = "/.snapshots"
+ROOT_SUBVOL: str = "/"
 
 # Default retention: keep snapshots for 7 days.
 RETENTION_DAYS: int = 7

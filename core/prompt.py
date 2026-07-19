@@ -202,26 +202,3 @@ def get_system_prompt() -> str:
     call made by the inference router (`core/router.py`).
     """
     return KRIYA_SYSTEM_PROMPT
-
-
-def get_safety_context() -> dict:
-    """Return a structured summary of safety guardrails
-    for programmatic consumption by the engine."""
-    return {
-        "sandbox_module": SANDBOX_MODULE,
-        "btrfs_hook_path": BTRFS_HOOK_PATH,
-        "snapshot_script": SNAPSHOT_SCRIPT,
-        "guardrails": [
-            "docker_sandbox_required_for_untrusted_code",
-            "btrfs_snapshot_before_pacman",
-            "no_destructive_filesystem_ops",
-            "resource_limits_enforced",
-            "transparent_logging_mandatory",
-        ],
-        "resource_limits": {
-            "opt_yantra_max_gb": 50,
-            "chromadb_max_gb": 10,
-            "docker_images_max_gb": 5,
-            "alert_threshold_pct": 80,
-        },
-    }

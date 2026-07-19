@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   yantra-daemon:
     build:
@@ -7,21 +5,34 @@ services:
       dockerfile: Dockerfile.daemon
     container_name: yantra-daemon
     restart: unless-stopped
+    init: true
+    user: "${YANTRA_UID:?YANTRA_UID must match the host yantra_daemon UID}:${YANTRA_GID:?YANTRA_GID must match the host yantra group GID}"
+    read_only: true
     env_file:
-      - .env
+      - path: /etc/yantra/daemon.env
+        required: false
+    environment:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      HF_HOME: /var/lib/yantra/cache
+      YANTRA_AUDIT_LOG_PATH: /var/log/yantra/audit.jsonl
+      YANTRA_CONFIRMATION_COUNTER_PATH: /var/lib/yantra/confirmation_counter.json
     mem_limit: 512m
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     volumes:
-      # Sibling-container execution (CRITICAL)
-      - /var/run/docker.sock:/var/run/docker.sock
-      # UNIX Domain Socket for host executor intents
-      - /run/yantra:/run/yantra
-      # Host secrets for API tokens
-      - /etc/yantra/host_secrets.env:/etc/yantra/host_secrets.env:ro
-      # Host auth log for brute-force detection
-      - /var/log/auth.log:/host_log/auth.log:ro
-      # Persistent audit log mounting
+      # Bind socket files, never their root-owned parent directories.
+      - type: bind
+        source: /run/yantra-sandbox/broker.sock
+        target: /run/yantra-sandbox/broker.sock
+        read_only: true
+        bind:
+          create_host_path: false
       - ./yantra_logs:/var/log/yantra
-      # Shared data corridor for Threat Intelligence Dashboard
+      - ./yantra_state:/var/lib/yantra
       - ./yantra_data:/shared_data
-    ports:
-      - "127.0.0.1:50000:50000"

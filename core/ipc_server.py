@@ -1,127 +1,159 @@
-import logging
 import asyncio
+import hmac
+import json
+import logging
 import os
+import re
 import time
-from fastapi import APIRouter, Request, HTTPException, FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 log = logging.getLogger(__name__)
 
-# ── Localhost enforcement for privileged endpoints ────────────────────────────
-# These IPs are considered loopback / local-only origins.
-_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+_LOCAL_AUTHORITY = re.compile(
+    r"(?:(?:localhost|127\.0\.0\.1)(?::([0-9]{1,5}))?|\[::1\](?::([0-9]{1,5}))?)\Z",
+    re.IGNORECASE,
+)
+MAX_REQUEST_BODY_BYTES = 8192
+MAX_PENDING_INJECTIONS = 10
+MAX_NOTIFICATION_COUNT = 10
+MAX_NOTIFICATION_CHARS = 4096
+MAX_NOTIFICATION_RESPONSE_BYTES = 16 * 1024
+SNAPPER_TIMEOUT_SECONDS = 5
 
 
-def _assert_localhost(request: Request) -> None:
-    """Reject non-loopback callers with 403 Forbidden.
-    
-    Privileged endpoints (secrets injection, route mutation) MUST only be
-    callable from the local machine. This is a defense-in-depth guard —
-    even if uvicorn is accidentally bound to 0.0.0.0 in the future, these
-    endpoints remain inaccessible to remote hosts.
-    """
-    client_host = request.client.host if request.client else None
-    if client_host not in _LOOPBACK_HOSTS:
-        log.warning(
-            f"> SECURITY: Rejected privileged request from non-local host {client_host}"
-        )
-        raise HTTPException(
-            status_code=403,
-            detail="Privileged endpoint restricted to localhost only."
-        )
+def _is_local_authority(authority: str) -> bool:
+    match = _LOCAL_AUTHORITY.fullmatch(authority)
+    if not match:
+        return False
+    port = match.group(1) or match.group(2)
+    return port is None or 0 < int(port) <= 65535
 
 
-# Rigid Pydantic models with extra="forbid" for Data Minimization (DPDPA Section 8)
-# Compatible with both Pydantic v1 and v2 via 'class Config:'
-class TelemetryHeartbeat(BaseModel):
-    class Config:
-        extra = "forbid"
-    
-    # Expected fields based on yantraos/telemetry/v1 schema
-    daemon_status: Optional[str] = None
-    active_model: Optional[str] = None
-    inference_routing: Optional[str] = None
-    status: Optional[str] = None
-    iteration: Optional[int] = None
+def _is_local_origin(origin: str) -> bool:
+    from urllib.parse import urlsplit
+
+    try:
+        parsed = urlsplit(origin)
+        parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() in {"http", "https"}
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+        and _is_local_authority(parsed.netloc)
+    )
+
+
+def _notification_payload_size(notifications: list[str]) -> int:
+    return len(
+        json.dumps(
+            {"notifications": notifications},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
 
 class InjectCommand(BaseModel):
-    class Config:
-        extra = "forbid"
-    
-    command: Optional[str] = None
-    instruction: Optional[str] = None
-    task: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
 
-class RouteConfig(BaseModel):
-    class Config:
-        extra = "forbid"
-    
-    tier: str
-    model: str
+    command: StrictStr = Field(min_length=1, max_length=500)
 
-class SecretUpdate(BaseModel):
-    class Config:
-        extra = "forbid"
-    
-    provider: str
-    key: str
+    @field_validator("command")
+    @classmethod
+    def reject_controls(cls, value: str) -> str:
+        if not value.isprintable():
+            raise ValueError("command must not contain control characters")
+        return value
+
 
 def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
     """
     Attach strict IPC routes to the FastAPI application.
-    Rejects any payload containing undocumented keys.
-    Privileged endpoints enforce localhost-only access.
+    Reject undocumented payload keys and authenticate the control plane.
     """
+    control_token = os.getenv("YANTRA_CONTROL_TOKEN")
+    if (
+        not control_token
+        or len(control_token) < 32
+        or control_token.startswith("<")
+        or not control_token.isprintable()
+        or any(character.isspace() for character in control_token)
+    ):
+        control_token = None
+    control_token_bytes = control_token.encode("utf-8") if control_token else None
+    if control_token_bytes is None:
+        log.error("> STATE API: YANTRA_CONTROL_TOKEN is not configured; control routes disabled.")
+
+    @app.middleware("http")
+    async def guard_control_plane(request: Request, call_next):
+        if request.url.path == "/health":
+            return await call_next(request)
+
+        allowed_clients = {"127.0.0.1", "::1", "localhost"}
+        if os.getenv("YANTRA_TEST_MODE") == "1":
+            allowed_clients.add("testclient")
+        if request.client is None or request.client.host not in allowed_clients:
+            return JSONResponse(status_code=403, content={"detail": "Remote clients are forbidden."})
+
+        hosts = request.headers.getlist("host")
+        if len(hosts) != 1 or not _is_local_authority(hosts[0]):
+            return JSONResponse(status_code=403, content={"detail": "Invalid Host header."})
+
+        origins = request.headers.getlist("origin")
+        if origins and (len(origins) != 1 or not _is_local_origin(origins[0])):
+            return JSONResponse(status_code=403, content={"detail": "Invalid Origin header."})
+
+        if control_token_bytes is None:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Control API is not configured."},
+            )
+
+        authorization = request.headers.getlist("authorization")
+        supplied = b""
+        valid_scheme = False
+        if len(authorization) == 1:
+            scheme, separator, token = authorization[0].partition(" ")
+            valid_scheme = bool(separator and token and " " not in token and scheme.lower() == "bearer")
+            supplied = token.encode("utf-8")
+        if not valid_scheme or not hmac.compare_digest(supplied, control_token_bytes):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid control credentials."},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        content_lengths = request.headers.getlist("content-length")
+        if len(content_lengths) > 1:
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length."})
+        if content_lengths:
+            try:
+                if int(content_lengths[0]) < 0 or int(content_lengths[0]) > MAX_REQUEST_BODY_BYTES:
+                    return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+            except ValueError:
+                return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length."})
+        if len(await request.body()) > MAX_REQUEST_BODY_BYTES:
+            return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+
+        return await call_next(request)
+
     @app.get("/debug")
     async def get_debug():
         import subprocess
+
+        if os.getenv("YANTRA_DEBUG_API") != "1":
+            raise HTTPException(status_code=403, detail="Debug API is disabled.")
+
         diag = {}
         
-        # 1. Check if secrets file exists and its contents (redacted)
-        secrets_path = "/etc/yantra/host_secrets.env"
-        try:
-            if os.path.exists(secrets_path):
-                with open(secrets_path) as f:
-                    lines = f.readlines()
-                redacted = []
-                for line in lines:
-                    line = line.strip()
-                    if "=" in line and not line.startswith("#"):
-                        key, val = line.split("=", 1)
-                        redacted.append(f"{key}={'SET('+str(len(val))+'chars)' if val else 'EMPTY'}")
-                    else:
-                        redacted.append(line)
-                diag["secrets_file"] = redacted
-            else:
-                diag["secrets_file"] = "FILE_NOT_FOUND"
-        except Exception as e:
-            diag["secrets_file"] = f"READ_ERROR: {e}"
-        
-        # 2. Check env vars the router needs
-        env_keys = ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", 
-                     "YANTRA_AZURE_KEY", "AZURE_DEPLOYMENT_COP",
-                     "AZURE_DEPLOYMENT_HEAVY", "TELEGRAM_BOT_TOKEN",
-                     "TELEGRAM_OPERATOR_CHAT_ID"]
-        env_status = {}
-        for k in env_keys:
-            v = os.environ.get(k, "")
-            env_status[k] = f"SET({len(v)}chars)" if v else "NOT_SET"
-        diag["env_vars"] = env_status
-        
-        # 3. Check systemd drop-in
-        dropin = "/etc/systemd/system/yantra.service.d/env.conf"
-        try:
-            if os.path.exists(dropin):
-                with open(dropin) as f:
-                    diag["dropin"] = f.read().strip()
-            else:
-                diag["dropin"] = "FILE_NOT_FOUND"
-        except Exception as e:
-            diag["dropin"] = f"READ_ERROR: {e}"
-        
-        # 4. Check router state
+        # Report subsystem state without exposing secret names, lengths, or paths.
         try:
             router = engine_ref._router
             diag["router_local_only"] = getattr(router, "local_only_mode", "N/A")
@@ -129,7 +161,7 @@ def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
         except Exception as e:
             diag["router_state"] = f"ERROR: {e}"
         
-        # 5. Try journalctl (may fail due to permissions)
+        # Journal output can contain task data; debug mode is explicitly opt-in.
         try:
             out = subprocess.check_output(
                 ["journalctl", "-u", "yantra.service", "-n", "50", "--no-pager"],
@@ -154,7 +186,17 @@ def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout_b, _ = await proc.communicate()
+            try:
+                stdout_b, _ = await asyncio.wait_for(
+                    proc.communicate(), timeout=SNAPPER_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.communicate()
+                raise
             if proc.returncode == 0:
                 lines = stdout_b.decode().strip().split('\n')
                 if len(lines) > 2:
@@ -186,59 +228,58 @@ def attach_ipc_routes(app: FastAPI, engine_ref) -> None:
         }
         return JSONResponse(content=payload)
 
-    @app.post("/telemetry/heartbeat", response_model_exclude_unset=True)
-    async def heartbeat(payload: TelemetryHeartbeat):
-        # Strict validation passes; process heartbeat
-        return {"status": "ok"}
-
     @app.post("/inject", response_model_exclude_unset=True)
-    async def inject(request: Request, payload: InjectCommand):
-        _assert_localhost(request)
-        # Extract command safely after strict validation
-        cmd = payload.command or payload.instruction or payload.task
-        if not cmd:
-            return JSONResponse(status_code=400, content={"error": "Missing 'command' field"})
-        
-        if cmd == "CONSENT_REVOKED":
-            engine_ref.compliance_executor.record_consent("CONSENT_REVOKED")
-            log.info("> STATE API: Consent revoked, data purge triggered.")
-            return {"status": "accepted", "command": cmd, "action": "purged"}
-            
-        # Inject into the Kriya Loop engine
-        engine_ref._pending_injections.append(str(cmd))
-        log.info(f"> STATE API: Injected user task: {cmd}")
-        return {"status": "accepted", "command": cmd}
+    async def inject(payload: InjectCommand):
+        cmd = payload.command
+        if cmd in {"CONSENT_GRANTED", "CONSENT_REVOKED"}:
+            engine_ref.compliance_executor.record_consent(cmd)
+            remote_purge = None
+            if cmd == "CONSENT_REVOKED":
+                engine_ref._pending_injections.clear()
+                engine_ref._state.conversation_history.clear()
+                engine_ref._state.notifications.clear()
+                engine_ref._state.thought_stream.clear()
+                from .cloud import revoke_telemetry
 
-    @app.post("/api/v1/config/route", response_model_exclude_unset=True)
-    async def route_config(request: Request, payload: RouteConfig):
-        _assert_localhost(request)
-        tier = payload.tier
-        model = payload.model
-        if tier not in ["traffic_cop", "heavy_lifter"] or not model:
-            return JSONResponse(status_code=400, content={"error": "Invalid tier or missing model"})
-        
-        if hasattr(engine_ref, "_config") and hasattr(engine_ref._config, "models"):
-            engine_ref._config.models[tier] = str(model)
-            return {"status": "success", "tier": tier, "model": model}
-        
-        return JSONResponse(status_code=500, content={"error": "Engine config not available"})
+                remote_purge = await revoke_telemetry()
+                log.info("> STATE API: Consent revoked, local data purge triggered.")
+            return {
+                "status": "accepted",
+                "consent": cmd,
+                "remote_purge": remote_purge,
+            }
 
-    @app.post("/api/v1/secrets/update", response_model_exclude_unset=True)
-    async def update_secrets(request: Request, payload: SecretUpdate):
-        _assert_localhost(request)
-        provider = payload.provider
-        key = payload.key
-        
-        action = {
-            "type": "UPDATE_SECRETS",
-            "reason": f"C2 requested ephemeral secret injection for {provider}",
-            "target": f"{provider}={key}"
-        }
-        engine_ref._state.pending_actions.append(action)
-        return {"status": "success", "message": f"Queued privileged UPDATE_SECRETS for {provider}"}
+        if len(engine_ref._pending_injections) >= MAX_PENDING_INJECTIONS:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Injection queue is full."},
+                headers={"Retry-After": "10"},
+            )
 
-    @app.get("/notifications")
-    async def get_notifications():
-        notifications = list(engine_ref._state.notifications)
-        engine_ref._state.notifications.clear()
+        engine_ref._pending_injections.append(cmd)
+        log.info("> STATE API: Accepted user task for injection.")
+        return {"status": "accepted"}
+
+    @app.post("/notifications")
+    async def consume_notifications():
+        queue = engine_ref._state.notifications
+        notifications: list[str] = []
+        consumed = 0
+        for raw_notification in queue[:MAX_NOTIFICATION_COUNT]:
+            text = str(raw_notification)[:MAX_NOTIFICATION_CHARS]
+            if _notification_payload_size(notifications + [text]) > MAX_NOTIFICATION_RESPONSE_BYTES:
+                low, high = 0, len(text)
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    if _notification_payload_size(notifications + [text[:middle]]) <= MAX_NOTIFICATION_RESPONSE_BYTES:
+                        low = middle
+                    else:
+                        high = middle - 1
+                text = text[:low]
+            if _notification_payload_size(notifications + [text]) > MAX_NOTIFICATION_RESPONSE_BYTES:
+                break
+            notifications.append(text)
+            consumed += 1
+
+        del queue[:consumed]
         return JSONResponse(content={"notifications": notifications})

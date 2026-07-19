@@ -6,9 +6,6 @@ Phase 2 Alpha
 Abstracts GPU / CPU / disk telemetry collection.
 On Linux with NVIDIA GPUs: uses pynvml for real hardware data.
 Fallback: uses subprocess.check_output(["lspci", "-nn"]) for AMD/Intel detection.
-Returns a strict capability state:
-  GpuCapability.LOCAL_CAPABLE (≥ 8GB VRAM)
-  GpuCapability.CLOUD_ONLY   (< 8GB VRAM or no discrete GPU)
 """
 
 from __future__ import annotations
@@ -18,22 +15,9 @@ import logging
 import os
 import subprocess
 from dataclasses import dataclass
-from enum import Enum
 from typing import Tuple
 
 log = logging.getLogger("yantra.hardware")
-
-
-# ── Capability Classification ─────────────────────────────────────────────────
-
-# Minimum VRAM threshold (GB) for local inference eligibility.
-VRAM_LOCAL_THRESHOLD_GB: float = 8.0
-
-
-class GpuCapability(str, Enum):
-    """Strict capability tier returned by the hardware probe."""
-    LOCAL_CAPABLE = "LOCAL_CAPABLE"   # ≥ 8GB VRAM — full local inference
-    CLOUD_ONLY = "CLOUD_ONLY"        # < 8GB VRAM or no discrete GPU
 
 
 # ── Telemetry Snapshots ───────────────────────────────────────────────────────
@@ -48,16 +32,7 @@ class GPUState:
     gpu_util_pct: float = 0.0
     temp_c: int = 0
     power_w: float = 0.0
-    capability: GpuCapability = GpuCapability.CLOUD_ONLY
     vendor: str = "unknown"     # "nvidia", "amd", "intel", "unknown"
-
-
-@dataclass
-class HardwareSnapshot:
-    """Full hardware telemetry snapshot."""
-    gpu: GPUState
-    cpu_pct: float = 0.0
-    disk_free_gb: float = 0.0
 
 
 # ── NVIDIA Probe (pynvml) ────────────────────────────────────────────────────
@@ -84,13 +59,6 @@ def _probe_nvidia() -> GPUState | None:
         vram_total_gb = mem.total / (1024 ** 3)
         vram_used_gb = mem.used / (1024 ** 3)
 
-        # Strict capability classification based on total VRAM
-        capability = (
-            GpuCapability.LOCAL_CAPABLE
-            if vram_total_gb >= VRAM_LOCAL_THRESHOLD_GB
-            else GpuCapability.CLOUD_ONLY
-        )
-
         state = GPUState(
             name=name,
             vram_used_gb=vram_used_gb,
@@ -98,14 +66,12 @@ def _probe_nvidia() -> GPUState | None:
             gpu_util_pct=float(util.gpu),
             temp_c=temp,
             power_w=power,
-            capability=capability,
             vendor="nvidia",
         )
         log.info(
             f"> HARDWARE: {state.name} — "
             f"VRAM {state.vram_used_gb:.1f}/{state.vram_total_gb:.1f}GB — "
-            f"GPU {state.gpu_util_pct:.0f}% — {state.temp_c}°C — "
-            f"Capability: {state.capability.value}"
+            f"GPU {state.gpu_util_pct:.0f}% — {state.temp_c}°C"
         )
         return state
 
@@ -152,8 +118,7 @@ def _probe_lspci() -> GPUState:
 
     GATE 4 FIX: AMD VRAM is no longer hardcoded. We probe sysfs
     (/sys/class/drm/card*/device/mem_info_vram_total) for real values.
-    If sysfs reports < 8GB (e.g. APU with shared memory), the GPU is
-    classified as CLOUD_ONLY to prevent OOM during local inference.
+    APUs may report 0 or a small dedicated VRAM allocation.
     """
     try:
         raw = subprocess.check_output(
@@ -165,7 +130,6 @@ def _probe_lspci() -> GPUState:
         log.warning(f"> HARDWARE: lspci probe failed: {e}")
         return GPUState(
             name="No GPU Detected",
-            capability=GpuCapability.CLOUD_ONLY,
             vendor="unknown",
         )
 
@@ -186,7 +150,6 @@ def _probe_lspci() -> GPUState:
             log.info(f"> HARDWARE: NVIDIA GPU found via lspci (no driver): {gpu_name}")
             return GPUState(
                 name=gpu_name,
-                capability=GpuCapability.CLOUD_ONLY,
                 vendor="nvidia",
             )
         elif "advanced micro" in lower or "amd" in lower or "ati" in lower:
@@ -196,46 +159,29 @@ def _probe_lspci() -> GPUState:
             # ── GATE 4: Deterministic AMD VRAM via sysfs ──────────────
             # DO NOT guess VRAM from lspci product names. Read the real
             # value from /sys/class/drm/card*/device/mem_info_vram_total.
-            # APUs (Vega 8, RDNA iGPU) report 0 or ~256MB dedicated VRAM
-            # and MUST be classified CLOUD_ONLY to prevent OOM.
             sysfs_vram = _probe_sysfs_vram()
-            if sysfs_vram >= VRAM_LOCAL_THRESHOLD_GB:
-                log.info(
-                    f"> HARDWARE: AMD discrete GPU detected: {gpu_name} — "
-                    f"sysfs VRAM: {sysfs_vram:.1f} GB (LOCAL_CAPABLE)"
-                )
-                return GPUState(
-                    name=gpu_name,
-                    vram_total_gb=sysfs_vram,
-                    capability=GpuCapability.LOCAL_CAPABLE,
-                    vendor="amd",
-                )
-            else:
-                vram_msg = f"{sysfs_vram:.1f} GB" if sysfs_vram > 0 else "not reported"
-                log.info(
-                    f"> HARDWARE: AMD GPU detected: {gpu_name} — "
-                    f"sysfs VRAM: {vram_msg} (CLOUD_ONLY)"
-                )
-                return GPUState(
-                    name=gpu_name,
-                    vram_total_gb=sysfs_vram,
-                    capability=GpuCapability.CLOUD_ONLY,
-                    vendor="amd",
-                )
+            vram_msg = f"{sysfs_vram:.1f} GB" if sysfs_vram > 0 else "not reported"
+            log.info(
+                f"> HARDWARE: AMD GPU detected: {gpu_name} — "
+                f"sysfs VRAM: {vram_msg}"
+            )
+            return GPUState(
+                name=gpu_name,
+                vram_total_gb=sysfs_vram,
+                vendor="amd",
+            )
         elif "intel" in lower:
             vendor = "intel"
             gpu_name = line.split(":")[-1].strip()
             log.info(f"> HARDWARE: Intel integrated GPU detected: {gpu_name}")
             return GPUState(
                 name=gpu_name,
-                capability=GpuCapability.CLOUD_ONLY,
                 vendor="intel",
             )
 
     log.warning("> HARDWARE: No recognized GPU found via lspci.")
     return GPUState(
         name=gpu_name,
-        capability=GpuCapability.CLOUD_ONLY,
         vendor=vendor,
     )
 
@@ -245,14 +191,11 @@ def _probe_lspci() -> GPUState:
 
 def probe_gpu() -> GPUState:
     """
-    Probe GPU hardware with strict capability classification.
+    Probe GPU hardware telemetry.
 
     Strategy:
-      1. Attempt pynvml (NVIDIA with driver) — get real VRAM and classify.
-      2. Fallback to lspci -nn (AMD/Intel/driverless NVIDIA) — heuristic classify.
-
-    Returns:
-        GPUState with capability set to LOCAL_CAPABLE or CLOUD_ONLY.
+      1. Attempt pynvml (NVIDIA with driver) for real telemetry.
+      2. Fallback to lspci -nn (AMD/Intel/driverless NVIDIA).
     """
     # Primary: pynvml for NVIDIA with working drivers
     nvidia_state = _probe_nvidia()
@@ -290,13 +233,6 @@ def probe_cpu_disk() -> Tuple[float, float, float]:
         log.warning(f"> HARDWARE: CPU/Disk probe failed: {e}")
 
     return cpu_pct, disk_free_gb, ram_pct
-
-
-def probe_all() -> HardwareSnapshot:
-    """Collect a full hardware snapshot."""
-    gpu = probe_gpu()
-    cpu_pct, disk_free_gb, _ = probe_cpu_disk()
-    return HardwareSnapshot(gpu=gpu, cpu_pct=cpu_pct, disk_free_gb=disk_free_gb)
 
 
 _auth_log_position: int = 0

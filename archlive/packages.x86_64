@@ -35,7 +35,6 @@ btrfs-progs
 # ── Networking ──────────────────────────────────────────────────────────────
 dhcpcd
 iwd
-openssh
 openvpn
 wireguard-tools
 wpa_supplicant
@@ -182,6 +181,4 @@ alsa-utils
 
 # ── YantraOS Additional Dependencies ───────────────────────────────────────
 # psutil: CPU/RAM/disk telemetry for the SENSE phase (hardware.py)
-# git: Required by litellm for dynamic catalog fetches
-git
 python-psutil

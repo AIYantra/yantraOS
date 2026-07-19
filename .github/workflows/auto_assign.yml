@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Assign OSYantra
-        uses: pozil/auto-assign-issue@v1
+        uses: pozil/auto-assign-issue@2f3e41b009e91b530f973eff2538eca6b555aabb # v1
         with:
           assignees: OSYantra
           repo-token: ${{ secrets.GITHUB_TOKEN }}

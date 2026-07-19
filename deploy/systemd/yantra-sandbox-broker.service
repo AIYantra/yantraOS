@@ -1,0 +1,55 @@
+[Unit]
+Description=YantraOS Root Sandbox Broker
+Documentation=https://yantraos.com/docs
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=yantra
+UMask=0077
+RuntimeDirectory=yantra-sandbox
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=no
+WorkingDirectory=/opt/yantra
+Environment="PYTHONPATH=/opt/yantra"
+ExecStartPre=/usr/bin/sh -c '/usr/bin/docker image inspect yantra-sandbox:3.20.3 >/dev/null 2>&1 || /usr/bin/docker load -i /opt/yantra/images/yantra-sandbox-3.20.3.tar'
+ExecStartPre=/usr/bin/docker image inspect yantra-sandbox:3.20.3
+ExecStart=/opt/yantra/venv/bin/python3 -m core.sandbox_broker
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=15
+TimeoutStopSec=30
+
+# Docker access remains confined to this root broker. The broker explicitly
+# changes broker.sock to root:yantra 0660 after bind despite UMask=0077.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run/yantra-sandbox
+
+MemoryMax=768M
+CPUQuota=100%
+TasksMax=64
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=yantra-sandbox-broker
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,4 @@
-"""
-YantraOS — Hybrid Cognitive Router (Dual-Tiered Azure Foundry)
-"""
+"""YantraOS hybrid cognitive router for Azure Foundry and local fallback."""
 
 from __future__ import annotations
 
@@ -25,11 +23,16 @@ class InferenceAuthError(Exception):
     pass
 
 class TieredRouter:
-    TRAFFIC_COP = "azure/gpt-5.4-mini"        # For SENSE and TEST phases
-    HEAVY_LIFTER = "moonshot/kimi-k2.7-code"  # For REASON and ACT phases
+    LUNA = "azure/gpt-5.6-luna"
+    TERRA = "azure/gpt-5.6-terra"
+    SOL = "azure/gpt-5.6-sol"
 
     # Cloud-hosted model identifiers — any model NOT in this set is LOCAL.
-    _CLOUD_MODELS = frozenset({TRAFFIC_COP, HEAVY_LIFTER})
+    _CLOUD_MODELS = frozenset({LUNA, TERRA, SOL})
+    _CLOUD_FALLBACKS = {
+        SOL: TERRA,
+        TERRA: LUNA,
+    }
 
     def __init__(self):
         try:
@@ -45,18 +48,6 @@ class TieredRouter:
         self.local_only_mode = False
         self.last_routing_tier: str = "LOCAL"  # Updated after every successful completion
 
-        # Load secrets if present
-        secrets_path = "/etc/yantra/host_secrets.env"
-        if os.path.exists(secrets_path):
-            try:
-                with open(secrets_path, "r") as f:
-                    for line in f:
-                        if "=" in line and not line.startswith("#"):
-                            key, val = line.strip().split("=", 1)
-                            os.environ[key] = val
-            except Exception as exc:
-                log.warning(f"> ROUTER: Could not read {secrets_path}: {exc}")
-
         raw_base = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
         if raw_base:
             if "/chat/completions" in raw_base:
@@ -68,31 +59,26 @@ class TieredRouter:
         else:
             api_base_url = ""
 
-        azure_dep_cop = os.environ.get("AZURE_DEPLOYMENT_COP", os.environ.get("AZURE_DEPLOYMENT_NAME", "gpt-5.4-mini"))
-        azure_dep_heavy = os.environ.get("AZURE_DEPLOYMENT_HEAVY", "gpt-5.4-mini")
+        azure_deployments = {
+            self.LUNA: os.environ.get("AZURE_DEPLOYMENT_LUNA", "gpt-5.6-luna"),
+            self.TERRA: os.environ.get("AZURE_DEPLOYMENT_TERRA", "gpt-5.6-terra"),
+            self.SOL: os.environ.get("AZURE_DEPLOYMENT_SOL", "gpt-5.6-sol"),
+        }
         api_key = os.environ.get("YANTRA_AZURE_KEY", os.environ.get("AZURE_OPENAI_API_KEY", ""))
 
         model_list = [
             {
-                "model_name": self.TRAFFIC_COP,
+                "model_name": model_name,
                 "litellm_params": {
-                    "model": f"openai/{azure_dep_cop}",
+                    "model": f"openai/{deployment}",
                     "api_key": api_key,
                     "api_base": api_base_url,
                     "timeout": 300,
                     "stream": True,
                 },
-            },
-            {
-                "model_name": self.HEAVY_LIFTER,
-                "litellm_params": {
-                    "model": f"openai/{azure_dep_heavy}",
-                    "api_key": api_key,
-                    "api_base": api_base_url,
-                    "timeout": 300,
-                    "stream": True,
-                },
-            },
+            }
+            for model_name, deployment in azure_deployments.items()
+        ] + [
             {
                 "model_name": "local/deepseek-v4",
                 "litellm_params": {
@@ -119,13 +105,15 @@ class TieredRouter:
             return "local/deepseek-v4"
 
         phase = phase.upper()
-        # Map both legacy tier names (engine.py) and new phase names
+        # Callers can mark novel or ambiguous work explicitly for escalation.
         if phase in ("SENSE", "TEST", "WATCHDOG"):
-            return self.TRAFFIC_COP
-        elif phase in ("REASON", "ACT", "BUILDER"):
-            return self.HEAVY_LIFTER
+            return self.LUNA
+        elif phase in ("NOVEL", "AMBIGUOUS", "BUILDER", "SOL"):
+            return self.SOL
+        elif phase in ("REASON", "ACT", "TERRA"):
+            return self.TERRA
         else:
-            return self.TRAFFIC_COP
+            return self.LUNA
 
     async def complete(
         self,
@@ -167,11 +155,12 @@ class TieredRouter:
                     log.info("> ROUTER: Retrying with local model...")
                     return await self.complete(messages, cognitive_tier=cognitive_tier, timeout=timeout, stream=stream)
                 raise InferenceAuthError(f"Auth failed and no local fallback available: {exc}") from exc
-            if model == self.HEAVY_LIFTER and model != self.TRAFFIC_COP:
-                log.warning(f"> ROUTER: Primary heavy model ({model}) failed ({exc}). Falling back to {self.TRAFFIC_COP}...")
+            fallback_model = self._CLOUD_FALLBACKS.get(model)
+            if fallback_model is not None:
+                log.warning(f"> ROUTER: Cloud model ({model}) failed ({exc}). Falling back to {fallback_model}...")
                 _fallback_call = functools.partial(
                     self.router.completion,
-                    model=self.TRAFFIC_COP,
+                    model=fallback_model,
                     messages=messages,
                     stream=stream,
                 )
@@ -180,10 +169,10 @@ class TieredRouter:
                         loop.run_in_executor(_INFERENCE_EXECUTOR, _fallback_call),
                         timeout=timeout,
                     )
-                    self.last_routing_tier = "CLOUD" if self.TRAFFIC_COP in self._CLOUD_MODELS else "LOCAL"
+                    self.last_routing_tier = "CLOUD"
                     return fb_response
                 except Exception as fb_exc:
-                    log.error(f"> ROUTER: Fallback to {self.TRAFFIC_COP} also failed: {fb_exc}")
+                    log.error(f"> ROUTER: Fallback to {fallback_model} also failed: {fb_exc}")
             log.error(f"> ROUTER: Inference failed: {exc}")
             raise
 
@@ -248,4 +237,4 @@ async def stream_complete(
             yield str(content)
 
 def select_model_group(vram_total_gb: float, vram_used_gb: float) -> str:
-    return TieredRouter.TRAFFIC_COP
+    return TieredRouter.LUNA

@@ -2,14 +2,19 @@
 Description=YantraOS Telegram C2 Gateway
 Documentation=https://github.com/yantraos/yantra
 BindsTo=yantra.service
-After=yantra.service network-online.target
+Requires=yantra-provision-secrets.service
+After=yantra.service network-online.target yantra-provision-secrets.service
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+ConditionPathExists=/etc/yantra/telegram.env
 
 [Service]
 Type=simple
-User=yantra_daemon
-Group=yantra
-EnvironmentFile=-/etc/yantra/host_secrets.env
+User=yantra_telegram
+Group=yantra_telegram
+UMask=0077
+EnvironmentFile=-/etc/yantra/telegram.env
 ExecStart=/opt/yantra/venv/bin/python3 /opt/yantra/core/telegram_gateway.py
 Restart=always
 RestartSec=5
@@ -27,6 +32,15 @@ ProtectControlGroups=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
+PrivateDevices=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target

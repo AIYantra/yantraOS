@@ -17,7 +17,7 @@
 #       @log             → /var/log    (journal + yantra logs)
 #       @yantra-snapshots → /.snapshots (autonomous BTRFS snapshots)
 #   • Headless by construction: no display manager, no TUI shell, no getty
-#     autologin. The Kriya Loop streams telemetry via port 50000 (WebHUD).
+#     autologin. The control API listens only on the VM loopback interface.
 #   • SSH is excised: no sshd installed, no keys generated, no port 22.
 #   • Azure Gen2 compliance: GPT partition table, EFI System Partition,
 #     systemd-boot, fixed-size VHD via qemu-img convert.
@@ -42,6 +42,8 @@ readonly RAW_IMAGE="${SCRIPT_DIR}/cloud/${IMAGE_NAME}.raw"
 readonly VHD_IMAGE="${SCRIPT_DIR}/cloud/${IMAGE_NAME}.vhd"
 readonly MNT_ROOT="/tmp/yantra-vhd-rootfs-$$"
 readonly VENV_TARGET="/opt/yantra/venv"
+readonly SANDBOX_IMAGE="yantra-sandbox:3.20.3"
+readonly SANDBOX_ARCHIVE="/opt/yantra/images/yantra-sandbox-3.20.3.tar"
 
 # Partition geometry (MiB-aligned for Azure sector requirements).
 readonly EFI_START_MIB=1
@@ -56,24 +58,19 @@ readonly -a PACSTRAP_PACKAGES=(
   base linux linux-firmware
   btrfs-progs dosfstools
   docker python python-pip python-virtualenv
-  git
-  networkmanager
+  cloud-init
   sudo less vim
-)
-
-# Python execution matrix shipped inside the venv.
-readonly -a YANTRA_PIP_PACKAGES=(
-  "fastapi" "uvicorn[standard]" "litellm" "chromadb"
-  "docker" "sdnotify" "pynvml" "textual" "rich" "aiogram" "aiohttp"
 )
 
 # Systemd units enabled via systemctl --root=.
 readonly -a YANTRA_SERVICES=(
-  "yantra.service" "yantra-host-executor.service" "yantra-telegram.service"
+  "yantra-provision-secrets.service" "yantra-sandbox-broker.service" "yantra.service"
+  "yantra-telegram.service"
 )
 readonly -a BASE_SERVICES=(
   "docker.service" "systemd-networkd.service"
-  "systemd-resolved.service" "NetworkManager.service"
+  "systemd-resolved.service" "cloud-init-local.service"
+  "cloud-init-network.service" "cloud-config.service" "cloud-final.service"
 )
 
 # ── Mutable globals ──────────────────────────────────────────────────────────
@@ -139,6 +136,7 @@ verify_dependencies() {
     [qemu-img]="qemu-img"
     [rsync]="rsync"
     [losetup]="util-linux"
+    [docker]="docker"
   )
   local missing=() cmd pkg
   for cmd in "${!REQUIRED_CMDS[@]}"; do
@@ -152,8 +150,15 @@ verify_dependencies() {
   log_ok "All build dependencies satisfied."
 
   # Source tree sanity.
-  [[ -d "${SCRIPT_DIR}/core" ]]   || die "Core directory not found: ${SCRIPT_DIR}/core"
-  [[ -d "${SCRIPT_DIR}/deploy" ]] || die "Deploy directory not found: ${SCRIPT_DIR}/deploy"
+  local source_dir
+  for source_dir in core scripts deploy; do
+    [[ -d "${SCRIPT_DIR}/${source_dir}" ]] \
+      || die "Required source directory missing: ${SCRIPT_DIR}/${source_dir}"
+  done
+  [[ -f "${SCRIPT_DIR}/requirements.txt" ]] \
+    || die "Required dependency manifest missing: ${SCRIPT_DIR}/requirements.txt"
+  [[ -f "${SCRIPT_DIR}/requirements.lock" ]] \
+    || die "Required dependency lock missing: ${SCRIPT_DIR}/requirements.lock"
   log_ok "Source tree verified."
 }
 
@@ -287,8 +292,8 @@ NETEOF
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 5 — inject_yantra_stack
-#   Deploy the Kriya Loop daemon, Host Executor, venv, sysusers/tmpfiles,
-#   and host_secrets.env into the VHD rootfs.
+#   Deploy the Kriya Loop daemon, sandbox broker, Host Executor, venv, and
+#   sysusers/tmpfiles into the VHD rootfs. Credentials never enter the image.
 # ══════════════════════════════════════════════════════════════════════════════
 inject_yantra_stack() {
   log_info "═══ PHASE 5: inject_yantra_stack ═══"
@@ -296,31 +301,45 @@ inject_yantra_stack() {
   # 5.1 — Inject codebase into /opt/yantra/ (mirrors forge_sovereign_iso.sh §2.4).
   local dest="${MNT_ROOT}/opt/yantra"
   install -dm755 "${dest}"
-  local sub
+  local sub src
   for sub in core scripts deploy; do
-    [[ -d "${SCRIPT_DIR}/${sub}" ]] || { log_warn "Source dir absent, skipping: ${sub}/"; continue; }
-    rsync -a --delete \
+    src="${SCRIPT_DIR}/${sub}"
+    [[ -d "${src}" ]] || die "Required source directory missing: ${src}"
+    rsync -a --chown=root:root --delete \
       --exclude='.env*' --exclude='*.pem' --exclude='*.key' \
+      --exclude='*.db' --exclude='*.sqlite*' \
       --exclude='__pycache__/' --exclude='*.pyc' --exclude='*.json' \
-      "${SCRIPT_DIR}/${sub}/" "${dest}/${sub}/"
+      "${src}/" "${dest}/${sub}/"
     log_info "  ↳ rsynced ${sub}/ → /opt/yantra/${sub}/"
   done
   # requirements.txt for in-chroot pip.
   [[ -f "${SCRIPT_DIR}/requirements.txt" ]] \
-    && install -Dm644 "${SCRIPT_DIR}/requirements.txt" "${dest}/requirements.txt"
+    || die "Required dependency manifest missing: ${SCRIPT_DIR}/requirements.txt"
+  install -Dm644 "${SCRIPT_DIR}/requirements.txt" "${dest}/requirements.txt"
+  install -Dm644 "${SCRIPT_DIR}/requirements.lock" "${dest}/requirements.lock"
   log_ok "Codebase injected into /opt/yantra/."
+
+  local sandbox_archive="${MNT_ROOT}${SANDBOX_ARCHIVE}"
+  install -dm755 "$(dirname -- "${sandbox_archive}")"
+  docker build --pull --tag "${SANDBOX_IMAGE}" "${SCRIPT_DIR}/core/sandbox"
+  docker image inspect "${SANDBOX_IMAGE}" >/dev/null
+  docker save --output "${sandbox_archive}" "${SANDBOX_IMAGE}"
+  chmod 0644 "${sandbox_archive}"
+  log_ok "Pinned sandbox image staged at ${SANDBOX_ARCHIVE}."
 
   # 5.2 — Install sysusers.d + tmpfiles.d (system user/group provisioning).
   install -Dm644 "${SCRIPT_DIR}/deploy/sysusers.d/yantra.conf" \
     "${MNT_ROOT}/usr/lib/sysusers.d/yantra.conf"
   install -Dm644 "${SCRIPT_DIR}/deploy/tmpfiles.d/yantra.conf" \
     "${MNT_ROOT}/usr/lib/tmpfiles.d/yantra.conf"
+  # /etc/yantra/secrets.env is intentionally absent. Provision it root:root
+  # 0600 after VM creation (for example through Key Vault), then restart Yantra.
   log_ok "sysusers.d + tmpfiles.d installed."
 
   # 5.3 — Create system users/groups NOW inside the chroot so UIDs exist
   #        for subsequent chown operations.
-  arch-chroot "${MNT_ROOT}" systemd-sysusers >/dev/null 2>&1 || true
-  arch-chroot "${MNT_ROOT}" systemd-tmpfiles --create >/dev/null 2>&1 || true
+  arch-chroot "${MNT_ROOT}" systemd-sysusers >/dev/null
+  arch-chroot "${MNT_ROOT}" systemd-tmpfiles --create >/dev/null
   log_ok "System users provisioned via systemd-sysusers."
 
   # 5.4 — Install systemd unit files.
@@ -338,21 +357,13 @@ inject_yantra_stack() {
   # 5.5 — Build Python venv inside the chroot (same pattern as forge_sovereign_iso.sh §3).
   log_info "Building Python venv inside chroot..."
   install -Dm644 /etc/resolv.conf "${MNT_ROOT}/etc/resolv.conf" 2>/dev/null || true
-  local pip_list="${YANTRA_PIP_PACKAGES[*]}"
-  arch-chroot "${MNT_ROOT}" /bin/bash -s -- "${pip_list}" <<'CHROOT'
+  arch-chroot "${MNT_ROOT}" /bin/bash -s <<'CHROOT'
 set -euo pipefail
 export GIT_HTTP_VERSION=1.1
 VENV=/opt/yantra/venv
-PIP_LIST="$1"
 install -dm755 /opt/yantra
 python -m venv "${VENV}"
-"${VENV}/bin/pip" install --upgrade pip setuptools wheel --quiet --retries 10 --timeout 120
-# shellcheck disable=SC2086
-"${VENV}/bin/pip" install ${PIP_LIST} --prefer-binary --quiet --retries 10 --timeout 120
-if [[ -f /opt/yantra/requirements.txt ]]; then
-  "${VENV}/bin/pip" install litellm --no-cache-dir --prefer-binary --quiet --retries 10 --timeout 120
-  "${VENV}/bin/pip" install -r /opt/yantra/requirements.txt --prefer-binary --quiet --retries 10 --timeout 120
-fi
+"${VENV}/bin/pip" install --require-hashes -r /opt/yantra/requirements.lock --prefer-binary --quiet --retries 10 --timeout 120
 CHROOT
   log_ok "Python venv compiled inside chroot."
 
@@ -366,45 +377,14 @@ SNAPEOF
   chmod 0755 "${snap_bin}"
   log_ok "/usr/bin/yantra-snapshot wrapper provisioned."
 
-  # 5.7 — Stage secrets (mirrors forge_sovereign_iso.sh §2.x stage_secrets).
-  stage_secrets
-
-  # 5.8 — Persistent state directories.
+  # 5.7 — Persistent state directories.
   install -dm750 "${MNT_ROOT}/var/lib/yantra" "${MNT_ROOT}/var/log/yantra"
   # Apply BTRFS nodatacow for ChromaDB.
   install -dm750 "${MNT_ROOT}/var/lib/yantra/chromadb"
-  arch-chroot "${MNT_ROOT}" bash -c "chattr +C /var/lib/yantra/chromadb 2>/dev/null || true"
+  arch-chroot "${MNT_ROOT}" chattr +C /var/lib/yantra/chromadb
   # Ownership: yantra_daemon:yantra (best effort — UID/GID may not resolve outside chroot).
-  arch-chroot "${MNT_ROOT}" bash -c "chown -R yantra_daemon:yantra /var/lib/yantra /var/log/yantra 2>/dev/null || true"
+  arch-chroot "${MNT_ROOT}" chown -R yantra_daemon:yantra /var/lib/yantra /var/log/yantra
   log_ok "Persistent state directories provisioned."
-}
-
-# ── Secrets staging (Azure cloud variant) ─────────────────────────────────────
-stage_secrets() {
-  log_info "── stage_secrets (cloud) ──"
-  local host_secrets="${SCRIPT_DIR}/host_secrets.env"
-  local etc_yantra="${MNT_ROOT}/etc/yantra"
-  local staged="${etc_yantra}/host_secrets.env"
-
-  if [[ ! -f "${host_secrets}" ]]; then
-    log_warn "host_secrets.env absent — VHD will ship WITHOUT inference credentials."
-    log_warn "Inject credentials post-deploy via Azure Key Vault or manual SCP."
-    return 0
-  fi
-
-  # Reference copy (root:yantra 0640).
-  install -dm750 "${etc_yantra}"
-  install -Dm640 "${host_secrets}" "${staged}"
-  sed -i "s/['\"]//g; s/[[:space:]]*$//" "${staged}"
-  arch-chroot "${MNT_ROOT}" bash -c "chown root:yantra /etc/yantra/host_secrets.env" || true
-  log_ok "Secrets staged: 0640 root:yantra"
-
-  # EnvironmentFile drop-in
-  local dropin="${MNT_ROOT}/etc/systemd/system/yantra.service.d"
-  install -dm755 "${dropin}"
-  printf '[Service]\nEnvironmentFile=/etc/yantra/host_secrets.env\n' > "${dropin}/env.conf"
-  chmod 640 "${dropin}/env.conf"
-  log_ok "EnvironmentFile drop-in → /etc/yantra/host_secrets.env"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -460,6 +440,29 @@ ENTRYEOF
   # Re-copy the regenerated initramfs to ESP.
   cp -- "${MNT_ROOT}/boot/initramfs-linux.img" "${MNT_ROOT}/boot/efi/initramfs-linux.img"
   log_ok "Initramfs regenerated with BTRFS module and re-synced to ESP."
+
+  # Keep the ESP kernel/initramfs synchronized after every Linux package update.
+  install -dm755 "${MNT_ROOT}/usr/local/sbin" "${MNT_ROOT}/etc/pacman.d/hooks"
+  cat > "${MNT_ROOT}/usr/local/sbin/yantra-sync-esp" <<'SYNCEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+install -Dm644 /boot/vmlinuz-linux /boot/efi/vmlinuz-linux
+install -Dm644 /boot/initramfs-linux.img /boot/efi/initramfs-linux.img
+SYNCEOF
+  chmod 0755 "${MNT_ROOT}/usr/local/sbin/yantra-sync-esp"
+  cat > "${MNT_ROOT}/etc/pacman.d/hooks/95-yantra-sync-esp.hook" <<'HOOKEOF'
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = linux
+
+[Action]
+Description = Synchronizing YantraOS kernel and initramfs to ESP
+When = PostTransaction
+Exec = /usr/local/sbin/yantra-sync-esp
+HOOKEOF
+  chmod 0644 "${MNT_ROOT}/etc/pacman.d/hooks/95-yantra-sync-esp.hook"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -474,25 +477,13 @@ enable_services() {
   # 7.1 — Enable base distribution services.
   local unit
   for unit in "${BASE_SERVICES[@]}"; do
-    # Use systemctl enable --root= for offline enablement (no running systemd needed).
-    systemctl enable --root="${MNT_ROOT}" "${unit}" 2>/dev/null || {
-      log_warn "Could not enable ${unit} via systemctl --root= (unit may not exist yet)."
-      # Fallback: manual symlink (same pattern as forge_sovereign_iso.sh).
-      local wants="${MNT_ROOT}/etc/systemd/system/multi-user.target.wants"
-      install -dm755 "${wants}"
-      ln -sf "/usr/lib/systemd/system/${unit}" "${wants}/${unit}" 2>/dev/null || true
-    }
+    systemctl enable --root="${MNT_ROOT}" "${unit}"
     log_info "  ↳ ${unit}"
   done
 
   # 7.2 — CRITICAL: Enable YantraOS services.
   for unit in "${YANTRA_SERVICES[@]}"; do
-    systemctl enable --root="${MNT_ROOT}" "${unit}" 2>/dev/null || {
-      log_warn "systemctl --root= failed for ${unit}, falling back to manual symlink."
-      local wants="${MNT_ROOT}/etc/systemd/system/multi-user.target.wants"
-      install -dm755 "${wants}"
-      ln -sf "/etc/systemd/system/${unit}" "${wants}/${unit}" 2>/dev/null || true
-    }
+    systemctl enable --root="${MNT_ROOT}" "${unit}"
     log_info "  ↳ ${unit} (CRITICAL — Kriya Loop)"
   done
   log_ok "All services enabled: ${#BASE_SERVICES[@]} base + ${#YANTRA_SERVICES[@]} YantraOS."
@@ -516,7 +507,7 @@ seal_image() {
   log_ok "Amnesia Protocol: host state purged."
 
   # 8.2 — Lock root password (headless node — no interactive login).
-  arch-chroot "${MNT_ROOT}" passwd -l root >/dev/null 2>&1 || true
+  arch-chroot "${MNT_ROOT}" passwd -l root >/dev/null
   log_ok "Root account locked (headless node — SSH excised)."
 
   # 8.3 — Sync and unmount.

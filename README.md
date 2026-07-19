@@ -293,7 +293,7 @@ OTA Manager         SystemD + pacman hook   Autonomous self-update
 YantraOS/
 │
 ├── archlive/                    # ArchISO build pipeline
-│   ├── compile_iso.sh           # Master build orchestrator
+│   ├── forge_sovereign_iso.sh   # Signed, fail-closed build orchestrator
 │   ├── airootfs/                # Live filesystem overlay
 │   │   ├── etc/                 # systemd units, users, sysctl
 │   │   └── opt/yantra/          # Deployed daemon files
@@ -307,10 +307,9 @@ YantraOS/
 │   ├── vector_memory.py         # ChromaDB async RAG interface
 │   ├── ipc_server.py            # FastAPI UDS IPC — 8-action router
 │   ├── cloud.py                 # Heartbeat to yantraos.com
-│   ├── config.py                # pydantic-settings configuration
-│   ├── tui_shell.py             # Textual TUI — the 3-pane HUD
-│   └── sandbox/
-│       └── Dockerfile           # Locked-down Alpine executor
+│   ├── sandbox_broker.py        # Root-only fixed-policy Docker broker
+│   ├── sandbox_client.py        # Authenticated unprivileged broker client
+│   └── sandbox/Dockerfile       # Digest-pinned Alpine executor
 │
 ├── deploy/                      # systemd service + polkit rules
 ├── docs/                        # Architecture diagrams
@@ -335,7 +334,7 @@ YantraOS/
   [GRUB bootloader]
        │
        ▼
-  [linux-lts kernel] --> No display manager. No Wayland. No X11.
+  [Linux kernel] --> Headless, no remote login.
        │
        ▼
   [TTY1: raw terminal]
@@ -343,17 +342,12 @@ YantraOS/
        ├--> [systemd] starts yantra.service --> Kriya Loop begins ∞
        │             (runs as yantra_daemon)
        │
-       └--> [auto-login: yantra_user]
+       └--> [yantra-provision-secrets.service]
                   │
-                  ▼
-              [tui_shell.py] launches Textual TUI
-                  │
-                  ├── Connects to /run/yantra/ipc.sock
-                  ├── Renders 3-pane HUD
-                  └── Streams live cognitive telemetry
+                  └── Key Vault managed identity or boot-media provisioning
 ```
 
-Two processes. One socket. One mind.
+The daemon starts only after credential provisioning and sandbox-broker readiness.
 
 ---
 
@@ -377,13 +371,9 @@ Two processes. One socket. One mind.
 git clone https://github.com/AIYantra/YantraOS.git
 cd YantraOS
 
-# Configure secrets (copy template and fill in your API keys)
-cp host_secrets.env.template host_secrets.env
-$EDITOR host_secrets.env
-
 # Build the ArchISO (requires: archiso, Docker, root)
 cd archlive
-sudo bash compile_iso.sh
+sudo -E bash forge_sovereign_iso.sh
 ```
 
 The ISO will be written to `archlive/out/yantraos-*.iso`.
@@ -406,14 +396,11 @@ qemu-system-x86_64 \
 # Create and activate virtual environment
 python3 -m venv .venv && source .venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install hash-locked dependencies
+pip install --require-hashes -r requirements.lock
 
-# Run the daemon (reads config.yaml + host_secrets.env)
+# Provision a strong YANTRA_CONTROL_TOKEN and required credentials first.
 python3 -m core.daemon
-
-# In a second terminal, launch the TUI
-python3 -m core.tui_shell
 ```
 
 ---
@@ -486,7 +473,7 @@ python3 -m core.tui_shell
   [✓] Thread-safe asyncio.Lock shared between KriyaLoop and IPC server
   [✓] Web HUD kinetic redesign (Sora/JetBrains Mono, 0px radius, 1px cyan dividers)
   [✓] Archiso packaging daemon bootstrap fix via PYTHONPATH injection
-  [✓] compile_iso.sh path variable privilege escalation vulnerability patched
+  [✓] forge_sovereign_iso.sh path and ownership boundaries hardened
 
   ONGOING
   [~] Restricted SSH whitelisted command gateway
@@ -526,14 +513,14 @@ YantraOS is built in public. Contributions are accepted but the architecture is 
 **Before opening a PR, understand the constraints:**
 - Every new subsystem must fail **gracefully**. The Kriya Loop must never hard-crash.
 - All AI-generated command execution must route through the Docker sandbox. No exceptions.
-- The daemon and TUI are separate processes. They must remain decoupled via IPC.
+- Privileged Docker access must remain confined to the authenticated sandbox broker.
 
 ```bash
 # Development workflow
 git checkout -b feature/your-feature
 # ... implement ...
 python3 -m core.daemon     # verify daemon starts clean
-python3 -m core.tui_shell  # verify TUI connects to socket
+python3 -m unittest discover
 git push origin feature/your-feature
 # Open PR against main
 ```

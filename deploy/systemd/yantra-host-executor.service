@@ -3,8 +3,8 @@
 # Target: /etc/systemd/system/yantra-host-executor.service
 #
 # Root-level daemon that binds a UNIX domain socket at
-# /run/yantra/executor.sock and processes typed JSON intents from the
-# unprivileged Kriya Loop (yantra.service). Every intent is gated by
+# /run/yantra/executor.sock and processes the single allowlisted daemon-restart
+# intent from the unprivileged Kriya Loop. Every request is gated by
 # a mandatory BTRFS pre-flight snapshot via the 50-yantra-autosnap.hook.
 #
 # This replaces the insecure SSH whitelist gateway (fleet_manager.py)
@@ -13,17 +13,20 @@
 #
 # Security architecture:
 #   yantra.service (unprivileged) ──JSON──▶ executor.sock ──▶ this daemon (root)
-#   Raw shell strings are REJECTED. Only typed intents with hardcoded
-#   command mappings are accepted. No shell=True. Ever.
+#   Raw shell strings are rejected. Server-side SO_PEERCRED requires the exact
+#   yantra_daemon UID; group membership alone is never authorization.
 #
 # Socket permissions:
 #   /run/yantra/executor.sock — root:yantra 0660
-#   Only processes in the 'yantra' group can connect (yantra_daemon).
+#   Group mode permits connection setup, but the server authorizes only the
+#   resolved yantra_daemon UID.
 # ──────────────────────────────────────────────────────────────────────────────
 
 [Unit]
 Description=YantraOS Host Executor — Privileged Intent Gateway (BTRFS-Gated)
 Documentation=https://yantraos.com/docs/host-executor
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 # ── Dependency ordering ──────────────────────────────────────────────────────
 # Must start after local filesystems are mounted (BTRFS snapshot root
@@ -40,14 +43,12 @@ RequiresMountsFor=/run/yantra
 # the socket bind is near-instant.
 Type=simple
 
-RuntimeDirectory=yantra
-RuntimeDirectoryMode=0755
-
 # ── Execution context ────────────────────────────────────────────────────────
 # Runs as root — this daemon IS the privilege boundary. The Kriya Loop
 # (yantra_daemon) connects as an unprivileged client over the UDS.
 User=root
 Group=root
+UMask=0077
 ExecStart=/opt/yantra/venv/bin/python3 /opt/yantra/core/host_executor.py
 
 # ── Working directory ────────────────────────────────────────────────────────
@@ -59,8 +60,6 @@ Environment="PYTHONPATH=/opt/yantra"
 # ── Restart policy ───────────────────────────────────────────────────────────
 Restart=on-failure
 RestartSec=5s
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 StandardOutput=journal
@@ -69,10 +68,23 @@ SyslogIdentifier=yantra-host-executor
 
 # ── Security hardening ───────────────────────────────────────────────────────
 # Root requires some capabilities, but we restrict filesystem access.
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/run/yantra -/@snapshots
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_FOWNER
+AmbientCapabilities=
+ReadWritePaths=/run/yantra /.snapshots
 
 # ── Resource limits ──────────────────────────────────────────────────────────
 # The executor is lightweight — snapshot + pacman. Cap it conservatively.
