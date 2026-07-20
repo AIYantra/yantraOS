@@ -58,7 +58,7 @@ readonly -a PACSTRAP_PACKAGES=(
   base linux linux-firmware
   btrfs-progs dosfstools
   docker python python-pip python-virtualenv
-  cloud-init
+  cloud-init walinuxagent
   sudo less vim
 )
 
@@ -71,6 +71,7 @@ readonly -a BASE_SERVICES=(
   "docker.service" "systemd-networkd.service"
   "systemd-resolved.service" "cloud-init-local.service"
   "cloud-init-network.service" "cloud-config.service" "cloud-final.service"
+  "waagent.service"
 )
 
 # ── Mutable globals ──────────────────────────────────────────────────────────

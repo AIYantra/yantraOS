@@ -406,8 +406,8 @@ write_files:
     content: |
       {"vault_url":"https://${KEY_VAULT_NAME}.vault.azure.net","secret_name":"${KEY_VAULT_SECRET_NAME}"}
 runcmd:
-  - [systemctl, restart, yantra-provision-secrets.service]
-  - [bash, -c, "for i in \$(seq 1 90); do if systemctl is-active --quiet yantra.service; then echo YANTRA_HEALTHY >/dev/ttyS0; exit 0; fi; sleep 10; done; exit 1"]
+  - bash -c "systemctl restart yantra-provision-secrets.service || true"
+  - bash -c "for i in \$(seq 1 90); do if systemctl is-active --quiet yantra.service; then echo YANTRA_HEALTHY >/dev/ttyS0; exit 0; fi; sleep 10; done; exit 1"
 CLOUDEOF
   if az vm show \
     --name "${VM_NAME}" \
