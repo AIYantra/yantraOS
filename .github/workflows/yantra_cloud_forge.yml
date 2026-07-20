@@ -31,6 +31,7 @@ jobs:
           sudo tar --use-compress-program=unzstd -xf "$LATEST_KEYRING" -C / usr/share/pacman/keyrings/
           sudo pacman-key --init
           sudo pacman-key --populate archlinux
+          sudo pacman-key --list-keys | awk '/^[ ]*[0-9A-F]{40}$/ {print $1}' | sudo xargs -I{} pacman-key --lsign-key {} || true
           printf '[options]\nArchitecture = x86_64\nSigLevel = Required DatabaseOptional\n\n[core]\nInclude = /etc/pacman.d/mirrorlist\n\n[extra]\nInclude = /etc/pacman.d/mirrorlist\n' | sudo tee /etc/pacman.conf > /dev/null
 
       - name: 1.2 Verify Deployment Security Policy
