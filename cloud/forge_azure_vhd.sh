@@ -327,6 +327,11 @@ inject_yantra_stack() {
   install -Dm644 "${SCRIPT_DIR}/requirements.lock" "${dest}/requirements.lock"
   log_ok "Codebase injected into /opt/yantra/."
 
+  # 5.2 — Configure cloud-init for Azure
+  install -dm755 "${MNT_ROOT}/etc/cloud/cloud.cfg.d"
+  echo "datasource_list: [ Azure ]" > "${MNT_ROOT}/etc/cloud/cloud.cfg.d/90-azure.cfg"
+  log_info "  ↳ Configured cloud-init Azure datasource."
+
   local sandbox_archive="${MNT_ROOT}${SANDBOX_ARCHIVE}"
   install -dm755 "$(dirname -- "${sandbox_archive}")"
   docker build --pull --tag "${SANDBOX_IMAGE}" "${SCRIPT_DIR}/core/sandbox"
