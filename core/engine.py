@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import shlex
 import signal
 import time
 from dataclasses import dataclass, field
@@ -49,6 +50,11 @@ from .sandbox_client import (
 )
 from .audit_log import log_action, log_execution
 from .cloud import stream_telemetry
+from .computer_use_bridge import (
+    run_intent as run_external_action,
+    select_task_route,
+    validate_task_intent,
+)
 
 log = logging.getLogger("yantra.engine")
 
@@ -65,6 +71,7 @@ class KriyaPhase(str, Enum):
 MAX_PENDING_ACTIONS: int = 5
 MAX_CONSECUTIVE_FAILURES: int = 5
 _MODEL_ACTION_TYPE: str = "SANDBOX_SCRIPT"
+_EXTERNAL_ACTION_TYPE: str = "EXTERNAL_ACTION"
 _MODEL_ACTION_FIELDS = frozenset({"type", "script", "reason", "priority"})
 _MODEL_PRIORITIES = frozenset({"CRITICAL", "HIGH", "MEDIUM", "LOW"})
 _MODEL_SECURITY_PROMPT = """
@@ -105,6 +112,123 @@ def _validated_model_action(action: Any) -> dict[str, Any]:
         "priority": priority,
         "_origin": "model",
     }
+
+
+def _operator_external_action(command: str) -> dict[str, Any] | None:
+    """Translate only a few deterministic operator commands into typed actions."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    words = [token.casefold() for token in tokens]
+    payload: dict[str, Any] | None = None
+    reason = ""
+
+    if command.casefold().startswith("computer use:"):
+        instruction = command.split(":", 1)[1].strip()
+        payload = {
+            "action": "computer_use_task",
+            "instruction": instruction,
+        }
+        reason = "operator explicitly requested computer-use automation"
+
+    elif words[0] == "create":
+        index = 1
+        while index < len(words) and words[index] in {"a", "the", "new"}:
+            index += 1
+        if index >= len(words) or words[index] != "file":
+            return None
+        index += 1
+        if index < len(words) and words[index] in {"called", "named"}:
+            index += 1
+        if index >= len(tokens):
+            return None
+        path = tokens[index]
+        remainder = tokens[index + 1:]
+        lowered_remainder = [token.casefold() for token in remainder]
+        if lowered_remainder[:2] == ["with", "content"]:
+            remainder = remainder[2:]
+        elif lowered_remainder[:1] == ["containing"]:
+            remainder = remainder[1:]
+        elif remainder:
+            return None
+        payload = {
+            "action": "file_management",
+            "operation": "create",
+            "path": path,
+            "content": " ".join(remainder),
+        }
+        reason = "operator file creation has a deterministic CLI equivalent"
+
+    elif words[0] == "move":
+        index = 1
+        while index < len(words) and words[index] in {"a", "the"}:
+            index += 1
+        if index < len(words) and words[index] == "file":
+            index += 1
+        if index + 2 >= len(tokens) or words[index + 1] != "to":
+            return None
+        if index + 3 != len(tokens):
+            return None
+        payload = {
+            "action": "file_management",
+            "operation": "move",
+            "path": tokens[index],
+            "destination": tokens[index + 2],
+        }
+        reason = "operator file move has a deterministic CLI equivalent"
+
+    elif words[0] in {"open", "launch", "start"}:
+        app_tokens = tokens[1:]
+        if app_tokens and app_tokens[0].casefold() == "the":
+            app_tokens = app_tokens[1:]
+        if app_tokens and app_tokens[-1].casefold() in {"app", "application"}:
+            app_tokens = app_tokens[:-1]
+        app_name = " ".join(app_tokens).strip()
+        if (
+            not app_name
+            or len(app_name) > 80
+            or any(
+                not (character.isalnum() or character in " ._+-")
+                for character in app_name
+            )
+        ):
+            return None
+        payload = {
+            "action": "computer_use_task",
+            "instruction": f"Open {app_name}",
+        }
+        reason = "operator requested an application launch"
+
+    if payload is None:
+        return None
+    try:
+        validate_task_intent(payload)
+    except ValueError:
+        return None
+    return {
+        "type": _EXTERNAL_ACTION_TYPE,
+        "reason": reason,
+        "action_payload": payload,
+        "_origin": "operator",
+    }
+
+
+def _validated_operator_external_action(action: Any) -> dict[str, Any]:
+    if not isinstance(action, dict):
+        raise ValueError("external action is not an object")
+    if set(action) - {"type", "reason", "action_payload", "_origin"}:
+        raise ValueError("external action contains unexpected fields")
+    if action.get("type") != _EXTERNAL_ACTION_TYPE:
+        raise ValueError("external action type is invalid")
+    if action.get("_origin") != "operator":
+        raise ValueError("only authenticated operator tasks may use external actions")
+    if not isinstance(action.get("reason"), str):
+        raise ValueError("external action reason must be a string")
+    return validate_task_intent(action.get("action_payload"))
 
 
 class TrackedActionQueue(collections.deque[dict[str, Any]]):
@@ -277,6 +401,42 @@ class KriyaLoopEngine:
         # a successful LLM response, so failed attempts can be retried.
         _current_injections = list(self._pending_injections)
         _has_injections = bool(_current_injections)
+
+        if _has_injections:
+            remaining_injections: list[str] = []
+            for command in _current_injections:
+                action = _operator_external_action(command)
+                if action is None or len(self._state.pending_actions) >= MAX_PENDING_ACTIONS:
+                    remaining_injections.append(command)
+                    continue
+                self._state.pending_actions.append(action)
+                route, route_reason = select_task_route(action["action_payload"])
+                route_message = (
+                    f"> REASON ROUTE: {route} selected for "
+                    f"{action['action_payload']['action']} because {route_reason}; "
+                    + (
+                        "computer-use screenshot loop will be skipped."
+                        if route == "CLI_FAST_PATH"
+                        else "computer-use screenshot loop is required."
+                    )
+                )
+                log.info(route_message)
+                self._state.thought_stream.append(
+                    f"[{time.strftime('%H:%M:%S')}] {route_message.removeprefix('> ')}"
+                )
+
+            if self._state.pending_actions:
+                self._pending_injections[:] = remaining_injections
+                self._injection_retry_count = 0
+                log.info(
+                    "> REASON: Queued %d typed operator action(s) without model inference; "
+                    "%d task(s) deferred.",
+                    len(self._state.pending_actions),
+                    len(remaining_injections),
+                )
+                if len(self._state.thought_stream) > 200:
+                    self._state.thought_stream = self._state.thought_stream[-200:]
+                return
 
         if _has_injections:
             # Sanitize injections to mitigate LLM prompt injection attacks
@@ -581,6 +741,47 @@ class KriyaLoopEngine:
             log.info(f"> ACTION: {action_type} — {reason}")
 
             script = action.get("script")
+
+            if action_type == _EXTERNAL_ACTION_TYPE:
+                try:
+                    action_payload = _validated_operator_external_action(action)
+                    route, route_reason = select_task_route(action_payload)
+                    log.info(
+                        "> ACT ROUTE: %s because %s.",
+                        route,
+                        route_reason,
+                    )
+                    exit_code = await asyncio.to_thread(
+                        run_external_action, action_payload
+                    )
+                except Exception as exc:
+                    log.error(
+                        "> EXTERNAL ACTION: Dispatch failed closed: %s",
+                        exc,
+                    )
+                    exit_code = 1
+
+                if exit_code == 0:
+                    self._record_action_success()
+                    self._state.notifications.append(
+                        f"Task Completed Successfully\nAction: {_EXTERNAL_ACTION_TYPE}\n"
+                        f"Path: {route}"
+                    )
+                    log.info(
+                        "> EXTERNAL ACTION: Completed through %s.",
+                        route,
+                    )
+                else:
+                    self._record_action_failure()
+                    self._state.notifications.append(
+                        f"Task Failed\nAction: {_EXTERNAL_ACTION_TYPE}\n"
+                        f"Exit Code: {exit_code}"
+                    )
+                    log.warning(
+                        "> EXTERNAL ACTION: Failed with bridge exit code %d.",
+                        exit_code,
+                    )
+                continue
 
             if (
                 action_type != _MODEL_ACTION_TYPE

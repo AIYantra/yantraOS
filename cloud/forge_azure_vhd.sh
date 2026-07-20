@@ -553,10 +553,15 @@ convert_to_vhd() {
   log_ok "VHD created: ${VHD_IMAGE}"
 
   # 9.3 — Verify the VHD.
-  qemu-img info "${VHD_IMAGE}" | head -6
+  qemu-img info -f vpc "${VHD_IMAGE}" | head -6
+  local vhd_bytes footer_cookie
+  vhd_bytes="$(stat --format='%s' "${VHD_IMAGE}")"
+  footer_cookie="$(dd if="${VHD_IMAGE}" bs=1 skip=$((vhd_bytes - 512)) count=8 status=none)"
+  [[ "${footer_cookie}" == "conectix" ]] \
+    || die "VHD footer verification failed: missing fixed-VHD cookie."
   local vhd_size
   vhd_size="$(du -h "${VHD_IMAGE}" | cut -f1)"
-  log_ok "Fixed VHD verified: ${vhd_size}"
+  log_ok "Fixed VHD verified (VPC footer present): ${vhd_size}"
 
   # 9.4 — Clean up the intermediate .raw (the VHD is the deliverable).
   rm -f -- "${RAW_IMAGE}"

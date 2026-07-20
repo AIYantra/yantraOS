@@ -36,7 +36,8 @@ readonly SCRIPT_DIR
 
 readonly RELENG_SRC="/usr/share/archiso/configs/releng"     # baseline Arch profile
 readonly PROFILE_SRC="${SCRIPT_DIR}"                        # YantraOS profile overlay
-readonly WORK_DIR="/tmp/yantra-work"                        # mkarchiso scratch (tmpfs)
+readonly BUILD_ROOT="${YANTRA_BUILD_ROOT:-/tmp}"
+readonly WORK_DIR="${BUILD_ROOT}/yantra-work"               # mkarchiso scratch
 readonly OUT_DIR="/opt/yantra-releases"                     # immutable artifact sink
 readonly VENV_TARGET="/opt/yantra/venv"                     # venv path on the LIVE ISO
 readonly SANDBOX_IMAGE="yantra-sandbox:3.20.3"
@@ -72,7 +73,7 @@ readonly -a YANTRA_SERVICES=(
 # Mutable globals populated at runtime.
 BUILD_PROFILE=""    # ephemeral assembled-profile dir (mktemp)
 AIROOTFS=""         # ${BUILD_PROFILE}/airootfs
-VENV_BUILD_DIR=""   # ephemeral venv-compilation chroot (/tmp/yantra-venv-chroot-$$)
+VENV_BUILD_DIR=""   # ephemeral venv-compilation chroot
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 readonly C_RED='\033[0;31m' C_GRN='\033[0;32m' C_YEL='\033[1;33m' C_CYN='\033[0;36m' C_NC='\033[0m'
@@ -118,6 +119,11 @@ verify_dependencies() {
   [[ "${EUID}" -eq 0 ]] || die "Must run as root (UID 0). Re-run: sudo -E $0"
   log_ok "Root privileges confirmed (EUID=0)."
 
+  mkdir -p -- "${BUILD_ROOT}"
+  [[ -d "${BUILD_ROOT}" && -w "${BUILD_ROOT}" ]] \
+    || die "Build scratch root is not writable: ${BUILD_ROOT}"
+  log_ok "Build scratch root ready: ${BUILD_ROOT}"
+
   # 1.2 — Signing key MUST exist up front (fail-closed sealing contract).
   [[ -n "${SIGNING_KEY}" ]] \
     || die "YANTRA_SIGNING_KEY is unset. Export the Ed25519 key path before forging."
@@ -162,7 +168,7 @@ scaffold_airootfs() {
   log_info "═══ scaffold_airootfs ═══"
 
   # 2.1 — Ephemeral profile dir on tmpfs-ish scratch.
-  BUILD_PROFILE="$(mktemp -d /tmp/yantra-forge.XXXXXXXX)"
+  BUILD_PROFILE="$(mktemp -d "${BUILD_ROOT}/yantra-forge.XXXXXXXX")"
   AIROOTFS="${BUILD_PROFILE}/airootfs"
   log_info "Ephemeral profile: ${BUILD_PROFILE}"
 
@@ -338,7 +344,7 @@ inject_kriya_loop() {
 
   # 3.2 — Define + create the ephemeral build matrix. Registered in the global
   #         so the EXIT trap can obliterate it even on a crash (constraint §4).
-  VENV_BUILD_DIR="/tmp/yantra-venv-chroot-$$"
+  VENV_BUILD_DIR="${BUILD_ROOT}/yantra-venv-chroot-$$"
   rm -rf -- "${VENV_BUILD_DIR}"
   install -dm755 "${VENV_BUILD_DIR}"
   log_info "Ephemeral venv matrix: ${VENV_BUILD_DIR}"
@@ -366,13 +372,6 @@ inject_kriya_loop() {
   env -u YANTRA_SIGNING_KEY -u YANTRA_SIGNING_KEY_PASSPHRASE \
     arch-chroot "${VENV_BUILD_DIR}" /bin/bash -s <<'CHROOT'
 set -euo pipefail
-
-# ── Network Hardening: Force HTTP/1.1 + expand Git buffer ────────────────
-# Default Git/cURL HTTP/2 negotiation collapses inside ephemeral chroot
-# overlays during large VCS clones (pip git+ dependencies). Force HTTP/1.1
-# and expand the postBuffer to 500MB to prevent stream reset errors.
-export GIT_HTTP_VERSION=1.1
-git config --system http.postBuffer 524288000
 
 VENV=/opt/yantra/venv
 install -dm755 /opt/yantra
@@ -505,7 +504,7 @@ sign_artifact() {
   local sum_file="${OUT_DIR}/${iso_name}.sha256"
 
   # Ephemeral, isolated keyring — host keyring is never touched.
-  local gnupg_tmp; gnupg_tmp="$(mktemp -d /tmp/yantra-gnupg.XXXXXXXX)"
+  local gnupg_tmp; gnupg_tmp="$(mktemp -d "${BUILD_ROOT}/yantra-gnupg.XXXXXXXX")"
   chmod 700 -- "${gnupg_tmp}"
 
   log_info "Signing checksum with Ed25519 key (ephemeral GNUPGHOME)..."

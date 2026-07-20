@@ -201,7 +201,12 @@ def _format_action_summary(action: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def confirm_action(action: dict[str, Any]) -> bool:
+def confirm_action(
+    action: dict[str, Any],
+    *,
+    transient: bool = False,
+    preapproved: bool = False,
+) -> bool:
     """Require an interactive human decision for every external action."""
     run_number = get_run_number()
     if not audit_log.log_action(
@@ -209,6 +214,14 @@ def confirm_action(action: dict[str, Any]) -> bool:
     ):
         log.error("Refusing action because its proposal audit could not be persisted.")
         return False
+
+    if preapproved:
+        return audit_log.log_action(
+            phase="CONFIRMED",
+            action=action,
+            run_number=run_number,
+            confirmation="task_level_test_approval",
+        )
 
     if not sys.stdin.isatty():
         log.warning("No TTY is available; rejecting external action.")
@@ -221,15 +234,21 @@ def confirm_action(action: dict[str, Any]) -> bool:
         )
         return False
 
-    print("\n" + "=" * 60)
-    print(f"  ACTION CONFIRMATION REQUIRED (run {run_number})")
-    print("=" * 60)
-    print(_format_action_summary(action))
-    print("-" * 60)
+    if transient:
+        print("\033[?1049h\033[2J\033[H", end="", flush=True)
     try:
-        response = input("  Execute this action? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        response = ""
+        print("\n" + "=" * 60)
+        print(f"  ACTION CONFIRMATION REQUIRED (run {run_number})")
+        print("=" * 60)
+        print(_format_action_summary(action))
+        print("-" * 60)
+        try:
+            response = input("  Execute this action? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            response = ""
+    finally:
+        if transient:
+            print("\033[?1049l", end="", flush=True)
 
     approved = response in {"y", "yes"}
     if approved:
@@ -261,19 +280,18 @@ def log_execution_outcome(
     success: bool,
     result_msg: str = "",
     error_msg: str = "",
-) -> None:
+) -> bool:
     run_number = max(1, get_run_number() - 1)
     if success:
-        audit_log.log_action(
+        return audit_log.log_action(
             phase="EXECUTED",
             action=action,
             run_number=run_number,
             result=result_msg or "Action completed successfully.",
         )
-    else:
-        audit_log.log_action(
-            phase="FAILED",
-            action=action,
-            run_number=run_number,
-            error=error_msg or "Action execution failed.",
-        )
+    return audit_log.log_action(
+        phase="FAILED",
+        action=action,
+        run_number=run_number,
+        error=error_msg or "Action execution failed.",
+    )

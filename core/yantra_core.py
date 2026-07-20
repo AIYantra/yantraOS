@@ -9,6 +9,11 @@ import struct
 from typing import List, Dict, Any
 from openai import OpenAI
 
+try:
+    from .computer_use_bridge import run_intent as run_external_action, select_task_route
+except ImportError:
+    from computer_use_bridge import run_intent as run_external_action, select_task_route
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
@@ -190,12 +195,40 @@ def _execute_host_action(action: Dict[str, Any]) -> bool:
     )
     return False
 
-def execute_actions(actions: List[Dict[str, Any]]):
+def execute_actions(
+    actions: List[Dict[str, Any]], *, approve_steps: bool = False
+):
     # Import the confirmation gate (M2: first 20 runs require human approval)
     try:
         from .action_confirmation import confirm_action, log_execution_outcome
     except ImportError:
         from action_confirmation import confirm_action, log_execution_outcome
+
+    navigation_urls = {
+        action.get("url")
+        for action in actions
+        if action.get("action") == "navigate_and_extract"
+    }
+    routed_actions: List[Dict[str, Any]] = []
+    for action in actions:
+        action_label = action.get("action")
+        if action_label == "open_url" and action.get("url") in navigation_urls:
+            continue
+        if action_label == "open_url":
+            action = {
+                "action": "computer_use_task",
+                "instruction": f"Open Firefox and go to {action.get('url', '')}.",
+            }
+        elif action_label == "navigate_and_extract":
+            action = {
+                "action": "computer_use_task",
+                "instruction": (
+                    f"Open Firefox, go to {action.get('url', '')}, and "
+                    f"{action.get('instruction', '')}"
+                ),
+            }
+        routed_actions.append(action)
+    actions = routed_actions
 
     for idx, action_intent in enumerate(actions):
         action_label = action_intent.get('action', 'unknown')
@@ -203,9 +236,20 @@ def execute_actions(actions: List[Dict[str, Any]]):
 
         if action_label in {"file_management", "computer_use_task"}:
             try:
-                succeeded = _execute_host_action(action_intent)
-            except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
-                log.error("Host Executor external action failed: %s", exc)
+                route, route_reason = select_task_route(action_intent)
+                log.info(
+                    "REASON ROUTE: %s selected because %s.",
+                    route,
+                    route_reason,
+                )
+                if approve_steps:
+                    succeeded = run_external_action(
+                        action_intent, approve_steps=True
+                    ) == 0
+                else:
+                    succeeded = run_external_action(action_intent) == 0
+            except (OSError, RuntimeError, ValueError) as exc:
+                log.error("Unprivileged external action failed: %s", exc)
                 succeeded = False
             if not succeeded:
                 log.error("Stopping remaining actions because a prerequisite failed.")
@@ -221,10 +265,7 @@ def execute_actions(actions: List[Dict[str, Any]]):
         intent_str = json.dumps(action_intent)
         log.info(f"Executing action {idx+1}/{len(actions)}: {action_label}")
         
-        if action_label == "computer_use_task":
-            bridge_path = os.path.join(os.path.dirname(__file__), "computer_use_bridge.py")
-        else:
-            bridge_path = os.path.join(os.path.dirname(__file__), "foundry_action_bridge.py")
+        bridge_path = os.path.join(os.path.dirname(__file__), "foundry_action_bridge.py")
 
         try:
             result = subprocess.run(
@@ -276,17 +317,21 @@ def execute_actions(actions: List[Dict[str, Any]]):
             )
 
 
-def process_query(query: str):
+def process_query(query: str, *, approve_steps: bool = False):
     log.info(f"Processing query: {query}")
     
-    deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+    deployment_name = os.getenv("AZURE_DEPLOYMENT_LUNA") or os.getenv(
+        "AZURE_OPENAI_DEPLOYMENT_NAME"
+    )
     if not deployment_name:
-        log.error("Missing AZURE_OPENAI_DEPLOYMENT_NAME in environment.")
+        log.error(
+            "Missing AZURE_DEPLOYMENT_LUNA or AZURE_OPENAI_DEPLOYMENT_NAME."
+        )
         sys.exit(1)
         
     client = get_openai_client()
     
-    log.info("Sending request to Azure OpenAI (GPT-5.6 Sol)...")
+    log.info("Sending request to Azure OpenAI deployment %s...", deployment_name)
     try:
         # Combine system prompt and user query since the new API uses 'input' as a single string
         combined_input = f"{SYSTEM_PROMPT}\n\nUser Query: {query}"
@@ -295,7 +340,7 @@ def process_query(query: str):
             model=deployment_name,
             input=combined_input,
         )
-        log.info(f"Raw API response: {response}")
+        log.debug("Raw API response: %s", response)
         response_text = ""
         for item in response.output:
             if getattr(item, "type", "") == "message":
@@ -307,7 +352,7 @@ def process_query(query: str):
         
         actions = parse_llm_response(response_text)
         if actions:
-            execute_actions(actions)
+            execute_actions(actions, approve_steps=approve_steps)
         else:
             log.warning("No valid actions extracted from the LLM response.")
             
@@ -315,13 +360,35 @@ def process_query(query: str):
         import traceback
         log.error(f"Failed to communicate with Azure OpenAI: {e}\n{traceback.format_exc()}")
 
+
+def _parse_cli_arguments(arguments: list[str]) -> tuple[list[str], bool]:
+    confirm_steps = "--confirm-steps" in arguments
+    query_arguments = [
+        argument
+        for argument in arguments
+        if argument not in {"--approve-steps", "--confirm-steps"}
+    ]
+    return query_arguments, not confirm_steps
+
 if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    os.environ.setdefault(
+        "YANTRA_AUDIT_LOG_PATH",
+        os.path.join(
+            os.path.expanduser("~"),
+            ".local",
+            "state",
+            "yantra",
+            "audit.jsonl",
+        ),
+    )
     
-    if len(sys.argv) < 2:
-        print("Usage: python yantra_core.py <natural language query>")
+    arguments = sys.argv[1:]
+    arguments, approve_steps = _parse_cli_arguments(arguments)
+    if not arguments:
+        print("Usage: python yantra_core.py [--confirm-steps] <natural language query>")
         sys.exit(1)
-        
-    query = " ".join(sys.argv[1:])
-    process_query(query)
+
+    query = " ".join(arguments)
+    process_query(query, approve_steps=approve_steps)

@@ -78,6 +78,23 @@ class ActionConfirmationTests(unittest.TestCase):
         self.assertIn("Open settings", summary)
         self.assertIn('"key": "28:1 28:0"', summary)
 
+    def test_preapproved_step_is_audited_without_another_prompt(self) -> None:
+        action = {
+            "action": "computer_use_task_step_1",
+            "proposed_action": {"action": "key", "key": "28:1 28:0"},
+        }
+        with (
+            patch.object(confirmation.audit_log, "log_action", return_value=True) as audit,
+            patch("builtins.input") as prompt,
+        ):
+            self.assertTrue(confirmation.confirm_action(action, preapproved=True))
+
+        prompt.assert_not_called()
+        self.assertEqual(
+            audit.call_args_list[-1].kwargs["confirmation"],
+            "task_level_test_approval",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
