@@ -257,7 +257,15 @@ pacstrap_rootfs() {
   log_ok "Pacstrap completed."
 
   # 4.1 — Generate fstab from mounted state.
+  # Note: Since udev is not running inside the Docker container, genfstab cannot resolve UUIDs
+  # and falls back to /dev/loopX block device paths. We manually patch them to UUIDs.
   genfstab -U "${MNT_ROOT}" >> "${MNT_ROOT}/etc/fstab"
+  
+  local uuid_boot uuid_root
+  uuid_boot="$(blkid -s UUID -o value "${EFI_PART}")"
+  uuid_root="$(blkid -s UUID -o value "${ROOT_PART}")"
+  sed -i "s|^${EFI_PART}|UUID=${uuid_boot}|" "${MNT_ROOT}/etc/fstab"
+  sed -i "s|^${ROOT_PART}|UUID=${uuid_root}|" "${MNT_ROOT}/etc/fstab"
   log_ok "fstab generated."
 
   # 4.2 — Basic system configuration.
