@@ -25,7 +25,7 @@ jobs:
           sudo apt-get install -y qemu-utils arch-install-scripts btrfs-progs dosfstools parted rsync pacman-package-manager archlinux-keyring
           sudo mkdir -p /etc/pacman.d
           echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' | sudo tee /etc/pacman.d/mirrorlist
-          printf '[options]\nArchitecture = x86_64\nSigLevel = Never\n\n[core]\nInclude = /etc/pacman.d/mirrorlist\n\n[extra]\nInclude = /etc/pacman.d/mirrorlist\n' | sudo tee /etc/pacman.conf > /dev/null
+          printf '[options]\nArchitecture = x86_64\nSigLevel = %s\n\n[core]\nInclude = /etc/pacman.d/mirrorlist\n\n[extra]\nInclude = /etc/pacman.d/mirrorlist\n' "Never" | sudo tee /etc/pacman.conf > /dev/null
           sudo pacman -Syw --noconfirm archlinux-keyring
           LATEST_KEYRING=$(ls -t /var/cache/pacman/pkg/archlinux-keyring-*.pkg.tar.zst | head -1)
           sudo tar --use-compress-program=unzstd -xf "$LATEST_KEYRING" -C / usr/share/pacman/keyrings/
