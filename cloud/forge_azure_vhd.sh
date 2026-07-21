@@ -378,7 +378,22 @@ inject_yantra_stack() {
   install -dm755 "${sysd}/yantra-provision-secrets.service.d"
   cat > "${sysd}/yantra-provision-secrets.service.d/cloud-restart.conf" <<'EOF'
 [Service]
+ExecStartPost=/bin/sh -c 'echo YANTRA_SECRETS_OK > /dev/ttyS0 || true'
 ExecStartPost=/bin/systemctl --no-block start yantra-sandbox-broker.service yantra.service yantra-telegram.service yantra-cloud-health.service
+EOF
+  # Debug: log provision failures to serial so boot-diagnostics can capture them
+  cat > "${sysd}/yantra-provision-secrets.service.d/serial-debug.conf" <<'EOF'
+[Service]
+StandardOutput=journal+console
+StandardError=journal+console
+EOF
+  # Route console output to ttyS0 for Azure boot diagnostics
+  install -dm755 "${MNT_ROOT}/etc/systemd/system/serial-getty@ttyS0.service.d"
+  mkdir -p "${MNT_ROOT}/etc/systemd/journald.conf.d"
+  cat > "${MNT_ROOT}/etc/systemd/journald.conf.d/forward-serial.conf" <<'EOF'
+[Journal]
+ForwardToConsole=yes
+MaxLevelConsole=info
 EOF
   log_ok "Systemd unit files installed."
 
