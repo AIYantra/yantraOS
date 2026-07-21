@@ -44,6 +44,8 @@ readonly MNT_ROOT="/tmp/yantra-vhd-rootfs-$$"
 readonly VENV_TARGET="/opt/yantra/venv"
 readonly SANDBOX_IMAGE="yantra-sandbox:3.20.3"
 readonly SANDBOX_ARCHIVE="/opt/yantra/images/yantra-sandbox-3.20.3.tar"
+readonly KEY_VAULT_NAME="${YANTRA_KEY_VAULT_NAME:-}"
+readonly KEY_VAULT_SECRET_NAME="${YANTRA_KEY_VAULT_SECRET_NAME:-}"
 
 # Partition geometry (MiB-aligned for Azure sector requirements).
 readonly EFI_START_MIB=1
@@ -58,19 +60,17 @@ readonly -a PACSTRAP_PACKAGES=(
   base linux linux-firmware
   btrfs-progs dosfstools
   docker python python-pip python-virtualenv
-  cloud-init
   sudo less vim
 )
 
 # Systemd units enabled via systemctl --root=.
 readonly -a YANTRA_SERVICES=(
   "yantra-provision-secrets.service" "yantra-sandbox-broker.service" "yantra.service"
-  "yantra-telegram.service"
+  "yantra-telegram.service" "yantra-cloud-health.service"
 )
 readonly -a BASE_SERVICES=(
   "docker.service" "systemd-networkd.service"
-  "systemd-resolved.service" "cloud-init-local.service"
-  "cloud-init-network.service" "cloud-config.service" "cloud-final.service"
+  "systemd-resolved.service"
 )
 
 # ── Mutable globals ──────────────────────────────────────────────────────────
@@ -126,6 +126,12 @@ verify_dependencies() {
 
   [[ "${EUID}" -eq 0 ]] || die "Must run as root (UID 0). Re-run: sudo -E $0"
   log_ok "Root privileges confirmed."
+
+  [[ "${KEY_VAULT_NAME}" =~ ^[A-Za-z0-9-]{3,24}$ ]] \
+    || die "YANTRA_KEY_VAULT_NAME is required and invalid."
+  [[ "${KEY_VAULT_SECRET_NAME}" =~ ^[A-Za-z0-9-]{1,127}$ ]] \
+    || die "YANTRA_KEY_VAULT_SECRET_NAME is required and invalid."
+  log_ok "Key Vault coordinates validated (no secret value enters the image)."
 
   local -A REQUIRED_CMDS=(
     [parted]="parted"
@@ -327,10 +333,14 @@ inject_yantra_stack() {
   install -Dm644 "${SCRIPT_DIR}/requirements.lock" "${dest}/requirements.lock"
   log_ok "Codebase injected into /opt/yantra/."
 
-  # 5.2 — Configure cloud-init for Azure
-  install -dm755 "${MNT_ROOT}/etc/cloud/cloud.cfg.d"
-  echo "datasource_list: [ Azure ]" > "${MNT_ROOT}/etc/cloud/cloud.cfg.d/90-azure.cfg"
-  log_info "  ↳ Configured cloud-init Azure datasource."
+  # Specialized-disk VMs have no osProfile/customData. Embed only the non-secret
+  # Key Vault coordinates; managed identity retrieves the value at first boot.
+  install -dm700 "${MNT_ROOT}/etc/yantra"
+  printf '{"vault_url":"https://%s.vault.azure.net","secret_name":"%s"}\n' \
+    "${KEY_VAULT_NAME}" "${KEY_VAULT_SECRET_NAME}" \
+    > "${MNT_ROOT}/etc/yantra/keyvault.json"
+  chmod 0600 "${MNT_ROOT}/etc/yantra/keyvault.json"
+  log_info "  ↳ Embedded non-secret Key Vault coordinates."
 
   local sandbox_archive="${MNT_ROOT}${SANDBOX_ARCHIVE}"
   install -dm755 "$(dirname -- "${sandbox_archive}")"
@@ -365,6 +375,11 @@ inject_yantra_stack() {
     install -Dm644 "${src}" "${sysd}/${unit}"
     log_info "  ↳ Installed ${unit}"
   done
+  install -dm755 "${sysd}/yantra-provision-secrets.service.d"
+  cat > "${sysd}/yantra-provision-secrets.service.d/cloud-restart.conf" <<'EOF'
+[Service]
+ExecStartPost=/bin/systemctl --no-block start yantra-sandbox-broker.service yantra.service yantra-telegram.service yantra-cloud-health.service
+EOF
   log_ok "Systemd unit files installed."
 
   # 5.5 — Build Python venv inside the chroot (same pattern as forge_sovereign_iso.sh §3).

@@ -32,8 +32,13 @@ jobs:
 
       - name: 2. Forge Azure VHD Before Cloud Authentication
         # Application credentials are provisioned after deployment; none enter the image.
+        env:
+          YANTRA_KEY_VAULT_NAME: ${{ vars.YANTRA_KEY_VAULT_NAME }}
+          YANTRA_KEY_VAULT_SECRET_NAME: ${{ vars.YANTRA_KEY_VAULT_SECRET_NAME }}
         run: |
           sudo docker run --rm --privileged \
+            -e YANTRA_KEY_VAULT_NAME="$YANTRA_KEY_VAULT_NAME" \
+            -e YANTRA_KEY_VAULT_SECRET_NAME="$YANTRA_KEY_VAULT_SECRET_NAME" \
             -v /dev:/dev \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v /etc/pacman.conf:/etc/pacman.conf \

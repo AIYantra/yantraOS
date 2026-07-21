@@ -64,6 +64,13 @@ class SecretProvisioningTests(unittest.TestCase):
             with patch.object(provision, "KEYVAULT_CONFIG", path), self.assertRaises(RuntimeError):
                 provision._read_bounded(path)
 
+    def test_azure_secret_names_allow_hyphens_and_full_length(self):
+        self.assertTrue(provision.AZURE_SECRET_NAME.fullmatch("yantra-runtime-env"))
+        self.assertTrue(provision.AZURE_SECRET_NAME.fullmatch("a"))
+        self.assertTrue(provision.AZURE_SECRET_NAME.fullmatch("a" * 127))
+        self.assertFalse(provision.AZURE_SECRET_NAME.fullmatch("a" * 128))
+        self.assertFalse(provision.AZURE_SECRET_NAME.fullmatch("bad_name"))
+
 
 if __name__ == "__main__":
     unittest.main()

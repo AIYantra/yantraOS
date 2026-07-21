@@ -186,10 +186,16 @@ class DeploymentSecurityTests(unittest.TestCase):
         self.assertIn("DEPLOYMENT_ID", azure)
         self.assertIn("az vm wait --created", azure)
         self.assertIn("--assign-identity", azure)
+        self.assertNotIn("--custom-data", azure)
         self.assertIn("Key Vault Secrets User", azure)
         self.assertIn("YANTRA_HEALTHY", azure)
         self.assertNotIn("az vm run-command", azure)
         self.assertIn("environment: production", workflow)
+        self.assertIn('-e YANTRA_KEY_VAULT_NAME="$YANTRA_KEY_VAULT_NAME"', workflow)
+        self.assertIn(
+            '-e YANTRA_KEY_VAULT_SECRET_NAME="$YANTRA_KEY_VAULT_SECRET_NAME"',
+            workflow,
+        )
         self.assertIn("cancel-in-progress: false", workflow)
         for workflow_path in (ROOT / ".github/workflows").glob("*.yml"):
             refs = re.findall(
@@ -233,6 +239,9 @@ class DeploymentSecurityTests(unittest.TestCase):
             self.assertIn("--require-hashes -r /opt/yantra/requirements.lock", read(image_builder))
         cloud_forge = read("cloud/forge_azure_vhd.sh")
         self.assertNotIn("NetworkManager.service", cloud_forge)
+        self.assertNotIn("cloud-init", cloud_forge)
+        self.assertIn("/etc/yantra/keyvault.json", cloud_forge)
+        self.assertIn('"yantra-cloud-health.service"', cloud_forge)
         self.assertNotIn("systemd-sysusers >/dev/null 2>&1 || true", cloud_forge)
         self.assertNotIn("passwd -l root >/dev/null 2>&1 || true", cloud_forge)
         self.assertIn("95-yantra-sync-esp.hook", cloud_forge)

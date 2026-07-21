@@ -1,0 +1,21 @@
+[Unit]
+Description=YantraOS Azure Boot Health Marker
+Requires=yantra.service
+After=yantra.service
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/bin/sleep 30
+ExecStart=/bin/systemctl is-active --quiet yantra.service
+ExecStart=/opt/yantra/venv/bin/python3 -c 'import json,urllib.request; json.load(urllib.request.urlopen("http://127.0.0.1:50000/health", timeout=5))'
+ExecStart=/bin/sh -c 'echo YANTRA_HEALTHY >/dev/ttyS0'
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

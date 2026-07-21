@@ -122,6 +122,9 @@ preflight() {
   account_name="$(az account show --query name -o tsv)"
   log_ok "Authenticated to Azure: ${account_name}"
 
+  [[ "$(az keyvault show --name "${KEY_VAULT_NAME}" --query properties.enableRbacAuthorization -o tsv)" == "true" ]] \
+    || die "Key Vault '${KEY_VAULT_NAME}' must use Azure RBAC authorization."
+
   # 1.2 — VHD artifact must exist.
   [[ -f "${VHD_PATH}" ]] || die "VHD not found: ${VHD_PATH}. Run forge_azure_vhd.sh first."
   local vhd_size
@@ -394,21 +397,6 @@ provision_vm() {
 
   # 6.4 — Create the Gen2 VM from the Managed Disk.
   log_info "Provisioning Gen2 VM: ${VM_NAME} (${VM_SIZE})..."
-  local cloud_config
-  cloud_config="$(mktemp)"
-  chmod 0600 "${cloud_config}"
-  cat > "${cloud_config}" <<CLOUDEOF
-#cloud-config
-write_files:
-  - path: /etc/yantra/keyvault.json
-    owner: root:root
-    permissions: '0600'
-    content: |
-      {"vault_url":"https://${KEY_VAULT_NAME}.vault.azure.net","secret_name":"${KEY_VAULT_SECRET_NAME}"}
-runcmd:
-  - bash -c "systemctl restart yantra-provision-secrets.service || true"
-  - bash -c "for i in \$(seq 1 90); do if systemctl is-active --quiet yantra.service; then echo YANTRA_HEALTHY >/dev/ttyS0; exit 0; fi; sleep 10; done; exit 1"
-CLOUDEOF
   if az vm show \
     --name "${VM_NAME}" \
     --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
@@ -423,12 +411,9 @@ CLOUDEOF
       --attach-os-disk "${DISK_NAME}" \
       --os-type Linux \
       --assign-identity \
-      --custom-data "${cloud_config}" \
       --output none
     log_ok "VM provisioned: ${VM_NAME} (${VM_SIZE}, Gen2 UEFI)"
   fi
-  rm -f -- "${cloud_config}"
-
   az vm wait --created --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}"
   local provisioning_state
   provisioning_state="$(az vm show --name "${VM_NAME}" --resource-group "${RESOURCE_GROUP}" --query provisioningState -o tsv)"

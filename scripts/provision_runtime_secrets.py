@@ -16,6 +16,7 @@ KEYVAULT_CONFIG = Path("/etc/yantra/keyvault.json")
 OUTPUT_DIR = Path("/etc/yantra")
 MAX_SOURCE_BYTES = 64 * 1024
 NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
+AZURE_SECRET_NAME = re.compile(r"^[A-Za-z0-9-]{1,127}$")
 
 DAEMON_KEYS = frozenset({
     "YANTRA_CONTROL_TOKEN",
@@ -58,7 +59,11 @@ def _fetch_keyvault_secret() -> bytes:
     vault_url = str(config["vault_url"]).rstrip("/")
     secret_name = str(config["secret_name"])
     parsed = urllib.parse.urlsplit(vault_url)
-    if parsed.scheme != "https" or not parsed.hostname or not NAME.fullmatch(secret_name.upper()):
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not AZURE_SECRET_NAME.fullmatch(secret_name)
+    ):
         raise RuntimeError("Invalid Key Vault configuration")
 
     token_url = (
@@ -66,7 +71,8 @@ def _fetch_keyvault_secret() -> bytes:
         "?api-version=2019-08-01&resource=https%3A%2F%2Fvault.azure.net"
     )
     token_request = urllib.request.Request(token_url, headers={"Metadata": "true"})
-    with urllib.request.urlopen(token_request, timeout=5) as response:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(token_request, timeout=5) as response:
         token_payload = json.loads(response.read(MAX_SOURCE_BYTES))
     token = token_payload.get("access_token")
     if not isinstance(token, str) or len(token) < 32:
@@ -79,7 +85,7 @@ def _fetch_keyvault_secret() -> bytes:
     secret_request = urllib.request.Request(
         secret_url, headers={"Authorization": f"Bearer {token}"}
     )
-    with urllib.request.urlopen(secret_request, timeout=10) as response:
+    with opener.open(secret_request, timeout=10) as response:
         payload = json.loads(response.read(MAX_SOURCE_BYTES))
     value = payload.get("value")
     if not isinstance(value, str):
