@@ -378,6 +378,14 @@ provision_vm() {
     log_ok "VNet created: ${VNET_NAME}/10.0.0.0/16 → ${SUBNET_NAME}/10.0.1.0/24"
   fi
 
+  az network vnet subnet update \
+    --name "${SUBNET_NAME}" \
+    --vnet-name "${VNET_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --service-endpoints Microsoft.KeyVault \
+    --output none
+  log_ok "Subnet '${SUBNET_NAME}' configured with Microsoft.KeyVault service endpoint."
+
   # 6.2 — Network Interface Card bound to the private subnet and deny-all NSG.
   if az network nic show \
     --name "${NIC_NAME}" \
