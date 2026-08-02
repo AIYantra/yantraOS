@@ -1,0 +1,11 @@
+{
+  "schema": "yantraos/runtime-skill/v1",
+  "id": "system_info",
+  "version": "1.0.0",
+  "actions": {
+    "system_info": {
+      "parameters": {},
+      "script": "printf 'platform='; uname -srm\nprintf 'cpu_count='; getconf _NPROCESSORS_ONLN\nprintf 'disk_free_kib='; df -Pk /tmp | tail -n 1 | tr -s ' ' | cut -d ' ' -f 4\n"
+    }
+  }
+}
