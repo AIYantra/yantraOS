@@ -204,7 +204,6 @@ class ComplianceExecutor:
     def __init__(
         self,
         db_path: str | os.PathLike[str] | None = None,
-        chroma_client=None,
         key_path: str | os.PathLike[str] | None = None,
     ):
         configured_db_path = os.environ.get(
@@ -221,7 +220,6 @@ class ComplianceExecutor:
         )
         _split_state_path(self.db_path, "Compliance database")
         _split_state_path(self.key_path, "Compliance key")
-        self.chroma_client = chroma_client
         self._init_keys()
         self._init_db()
         self._verify_ledger()
@@ -410,18 +408,7 @@ class ComplianceExecutor:
             deleted = cursor.rowcount
             conn.commit()
 
-        if self.chroma_client:
-            try:
-                for collection_name in ["skill_index", "execution_logs"]:
-                    try:
-                        self.chroma_client.delete_collection(collection_name)
-                        logger.info(f"Purged vector collection {collection_name}")
-                    except ValueError:
-                        pass
-            except Exception as e:
-                logger.error(f"Failed to purge ChromaDB collections: {e}")
-
-        logger.info(f"Immediate data purge executed. Dropped {deleted} SQLite records and cleared vectors.")
+        logger.info(f"Immediate data purge executed. Dropped {deleted} SQLite records.")
 
     def sweep_expired_telemetry(self, ttl_hours: float):
         """
@@ -441,17 +428,6 @@ class ComplianceExecutor:
             )
             deleted = cursor.rowcount
             conn.commit()
-
-        if self.chroma_client:
-            try:
-                for collection_name in ["skill_index", "execution_logs"]:
-                    try:
-                        col = self.chroma_client.get_collection(collection_name)
-                        col.delete(where={"timestamp": {"$lt": expiration_time}})
-                    except ValueError:
-                        pass
-            except Exception as e:
-                logger.error(f"Failed to sweep ChromaDB collections: {e}")
 
         if deleted > 0:
             logger.info(f"Swept {deleted} expired telemetry records (TTL {ttl_hours} hours).")

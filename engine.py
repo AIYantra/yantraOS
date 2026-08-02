@@ -44,7 +44,6 @@ from .prompt import get_system_prompt
 from .trusted_guidance import load_guidance
 from .hardware import probe_gpu, probe_cpu_disk, get_ssh_telemetry
 from .compliance_executor import ComplianceExecutor
-from .vector_memory import get_memory
 from .hybrid_router import (
     INFERENCE_TIMEOUT_SECS,
     complete as router_complete,
@@ -334,7 +333,7 @@ class KriyaLoopEngine:
         )
         self._running = False
         self._last_watchdog_ping: float = 0.0
-        self.compliance_executor = ComplianceExecutor(chroma_client=get_memory().client)
+        self.compliance_executor = ComplianceExecutor()
 
         if sdnotify is not None:
             self._sd = sdnotify.SystemdNotifier()

@@ -25,6 +25,7 @@ _DEFAULT_DEPLOYMENTS = {
     "SOL": "gpt-5.6-sol",
 }
 _LOCAL_AZURE_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_AZURE_ENDPOINT_SUFFIXES = (".openai.azure.com", ".cognitiveservices.azure.com", ".services.ai.azure.com")
 
 # Critical Decoupling: ThreadPoolExecutor with max_workers=4
 _INFERENCE_EXECUTOR: concurrent.futures.ThreadPoolExecutor = (
@@ -60,8 +61,11 @@ def validate_azure_endpoint(endpoint: str) -> str:
         or parsed.fragment
     ):
         raise ValueError("AZURE_OPENAI_ENDPOINT is invalid")
-    if parsed.scheme.casefold() != "https" and hostname not in _LOCAL_AZURE_HOSTS:
-        raise ValueError("AZURE_OPENAI_ENDPOINT requires HTTPS for non-local endpoints")
+    if hostname in _LOCAL_AZURE_HOSTS:
+        if parsed.scheme.casefold() != "http":
+            raise ValueError("AZURE_OPENAI_ENDPOINT local endpoints require HTTP")
+    elif parsed.scheme.casefold() != "https" or not hostname.endswith(_AZURE_ENDPOINT_SUFFIXES):
+        raise ValueError("AZURE_OPENAI_ENDPOINT must be an Azure HTTPS endpoint")
     return endpoint
 
 
